@@ -11,7 +11,7 @@ export type ListingResult = {
   description: string | null;
   images: string[];
   feature: string;
-  propertyType?: string | null;
+  propertyType: string | null;
   parking?: string | null;
   missing?: string[];
 }
