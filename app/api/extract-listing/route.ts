@@ -102,8 +102,11 @@ export async function POST(request: NextRequest) {
     const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
 
     const getJsonLdFirst = (keys: string[]) => {
-      const found = deepFind(jsonLd, keys);
-      for (const v of found) if (v) return clean(String(typeof v === 'object' ? JSON.stringify(v) : v));
+      for (const key of keys) {
+        const path = key.split('.');
+        const found = path.length > 1 ? deepFindPath(jsonLd, path) : deepFind(jsonLd, [key]);
+        for (const v of found) if (v) return clean(String(typeof v === 'object' ? JSON.stringify(v) : v));
+      }
       return '';
     };
 
@@ -135,6 +138,9 @@ export async function POST(request: NextRequest) {
     const area_total = rawFloor ? (rawFloor.match(/[0-9\.,]+/)?.[0] ? `${rawFloor.match(/[0-9\.,]+/)![0]} m²` : `${rawFloor} m²`) : (firstMatch(combined, [/([0-9\.,]+)\s*m²\s*(?:totales?|terreno|útiles?)/i, /(?:superficie total|superficie)(?:[^\d]{0,30})([0-9\.,]+)\s*m/i]) || null);
     const rawUsable = getJsonLdFirst(['areaUsable','area_usable','usableArea']) || firstMatch(combined, [/superficie úti[le]s?[\s:\-]*([0-9\.,]+)\s*m/i, /m²\s*útil\s*:?[\s]*([0-9\.,]+)/i]);
     const area_usable = rawUsable ? (rawUsable.match(/[0-9\.,]+/)?.[0] ? `${rawUsable.match(/[0-9\.,]+/)![0]} m²` : `${rawUsable} m²`) : null;
+    const bodegas = getJsonLdFirst(['numberOfRooms','numberOfBodegas','bodegaCount']) || firstMatch(combined, [/Bodega[s]?\s*[:\-–]?\s*([0-9]+)/i, /Bodega[s]?.{0,20}?([0-9]+)/i]) || null;
+    const gastos_comunes = getJsonLdFirst(['commonCharges','gastosComunes','gastos_comunes']) || firstMatch(combined, [/Gastos comunes\s*[:\-–]?\s*([0-9\.,]+\s*(?:UF|\$)?)/i, /Gastos comunes.{0,30}?([0-9\.,]+\s*(?:UF|\$)?)/i]) || null;
+    const orientacion = getJsonLdFirst(['orientation','orientacion','orientación']) || firstMatch(combined, [/Orientaci[oó]n\s*[:\-–]?\s*([NSEWO]{1,5})/i, /Orientaci[oó]n\s*[:\-–]?\s*([A-Za-z ]+)/i]) || null;
 
     // Commune: prefer structured address in JSON-LD, then explicit labels
     let commune: string | null = getJsonLdFirst(['address.addressLocality','address.addressRegion','addressLocality','address.region','addressRegion']);
@@ -182,10 +188,14 @@ export async function POST(request: NextRequest) {
       bathrooms: bathrooms || null,
       title,
       description,
+      raw_text: plain || null,
       images,
       feature,
       propertyType: propertyType || null,
       parking: parking || null,
+      bodegas: bodegas || null,
+      gastos_comunes: gastos_comunes || null,
+      orientacion: orientacion || null,
       missing: []
     };
 
