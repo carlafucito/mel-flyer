@@ -46,7 +46,13 @@ export async function POST(request: NextRequest) {
       input: [{ role: "user", content }]
     });
 
-    const raw = response.output_text?.trim() ?? "";
+    const raw = (response.output_text?.trim() ??
+      response.output
+        ?.flatMap((item: any) => item.content ?? [])
+        .map((part: any) => part.text ?? "")
+        .join("")
+        .trim() ??
+      "");
     const jsonText = raw.replace(/^```json\s*|```$/g, "");
     try {
       const parsed = JSON.parse(jsonText);
