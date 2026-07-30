@@ -50,12 +50,12 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
         </div>
         <div>
           <label className="block text-xs text-gray-600">Comuna</label>
-          <input value={data.commune} onChange={e => setField('commune', e.target.value)} className="w-full rounded-md border px-3 py-2" />
+          <input value={data.commune ?? ''} onChange={e => setField('commune', e.target.value)} className="w-full rounded-md border px-3 py-2" />
         </div>
         <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="block text-xs text-gray-600">Precio</label>
-            <input value={data.price} onChange={e => setField('price', e.target.value)} className="w-full rounded-md border px-3 py-2" />
+            <input value={data.price ?? ''} onChange={e => setField('price', e.target.value)} className="w-full rounded-md border px-3 py-2" />
           </div>
           <div>
             <label className="block text-xs text-gray-600">Moneda</label>
@@ -65,7 +65,7 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
         <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="block text-xs text-gray-600">Superficie total</label>
-            <input value={data.area_total} onChange={e => setField('area_total', e.target.value)} className="w-full rounded-md border px-3 py-2" />
+            <input value={data.area_total ?? ''} onChange={e => setField('area_total', e.target.value)} className="w-full rounded-md border px-3 py-2" />
           </div>
           <div>
             <label className="block text-xs text-gray-600">Superficie útil</label>
@@ -75,22 +75,22 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
         <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="block text-xs text-gray-600">Dormitorios</label>
-            <input value={data.bedrooms} onChange={e => setField('bedrooms', e.target.value)} className="w-full rounded-md border px-3 py-2" />
+            <input value={data.bedrooms ?? ''} onChange={e => setField('bedrooms', e.target.value)} className="w-full rounded-md border px-3 py-2" />
           </div>
           <div>
             <label className="block text-xs text-gray-600">Baños</label>
-            <input value={data.bathrooms} onChange={e => setField('bathrooms', e.target.value)} className="w-full rounded-md border px-3 py-2" />
+            <input value={data.bathrooms ?? ''} onChange={e => setField('bathrooms', e.target.value)} className="w-full rounded-md border px-3 py-2" />
           </div>
         </div>
 
         <div>
           <label className="block text-xs text-gray-600">Título</label>
-          <input value={data.title} onChange={e => setField('title', e.target.value)} className="w-full rounded-md border px-3 py-2" />
+          <input value={data.title ?? ''} onChange={e => setField('title', e.target.value)} className="w-full rounded-md border px-3 py-2" />
         </div>
 
         <div>
           <label className="block text-xs text-gray-600">Descripción</label>
-          <textarea value={data.description} onChange={e => setField('description', e.target.value)} className="w-full rounded-md border px-3 py-2 h-28" />
+          <textarea value={data.description ?? ''} onChange={e => setField('description', e.target.value)} className="w-full rounded-md border px-3 py-2 h-28" />
         </div>
 
         <div>

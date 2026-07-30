@@ -5,14 +5,14 @@ export const maxDuration = 60;
 
 type PropertyData = {
   operation: string;
-  commune: string;
-  price: string;
-  area: string;
-  bedrooms: string;
-  bathrooms: string;
+  commune: string | null;
+  price: string | null;
+  area: string | null;
+  bedrooms: string | null;
+  bathrooms: string | null;
   feature: string;
-  title: string;
-  description: string;
+  title: string | null;
+  description: string | null;
   images: string[];
 };
 
@@ -92,23 +92,42 @@ export async function POST(request: NextRequest) {
     const plain = clean(html.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " "));
     const combined = `${plain} ${allJson}`;
 
-    const title = firstMatch(html, [/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)/i, /<title>([^<]+)/i]);
-    const description = firstMatch(html, [/<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)/i]);
-    const price = firstMatch(combined, [/(UF\s?[\d\.]+)/i, /(\$\s?[\d\.]+)/]);
-    const bedrooms = firstMatch(combined, [/(\d+)\s*(?:dormitorios?|habitaciones?)/i, /(?:dormitorios?|habitaciones?)[^\d]{0,20}(\d+)/i]);
-    const bathrooms = firstMatch(combined, [/(\d+)\s*baños?/i, /baños?[^\d]{0,20}(\d+)/i]);
-    const area = firstMatch(combined, [/(\d[\d\.]*)\s*m²\s*(?:totales?|terreno|útiles?)/i, /(?:superficie total|terreno)[^\d]{0,30}(\d[\d\.]*)\s*m/i]);
-    const commune = firstMatch(combined, [/(Ñuñoa|Chicureo|Colina|Las Condes|Providencia|Vitacura|Lo Barnechea|Santiago|La Reina|Peñalolén|Huechuraba|Maipú|La Florida)/i]);
-    const operation = /arriendo|alquiler/i.test(`${title} ${description}`) ? "ARRIENDO" : "VENTA";
+    const getJsonLdFirst = (keys: string[]) => {
+      const found = deepFind(jsonLd, keys);
+      for (const v of found) if (v) return clean(String(typeof v === 'object' ? JSON.stringify(v) : v));
+      return '';
+    };
+
+    const title = getJsonLdFirst(['name']) || firstMatch(html, [/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)/i, /<title>([^<]+)/i]) || null;
+    let description = getJsonLdFirst(['description']) || firstMatch(html, [/<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)/i]) || null;
+    if (description && title && description.includes(title)) description = description.replace(title, '').trim() || null;
+
+    const priceRaw = getJsonLdFirst(['price','offers','price']) || firstMatch(combined, [/(UF\s?[\d\.,]+)/i, /(\$\s?[\d\.,]+)/i]);
+    const price = priceRaw || null;
+
+    const bedrooms = getJsonLdFirst(['numberOfRooms','numberOfBedrooms','numBedrooms']) || firstMatch(combined, [/([0-9]+)\s*(?:dormitorios?|habitaciones?)/i, /(?:dormitorios?|habitaciones?)[^\d]{0,20}([0-9]+)/i]) || null;
+    const bathrooms = getJsonLdFirst(['numberOfBathroomsTotal','numberOfBathrooms','bathroomCount']) || firstMatch(combined, [/([0-9]+)\s*baños?/i, /baños?[^\d]{0,20}([0-9]+)/i]) || null;
+
+    const areaRaw = getJsonLdFirst(['floorSize','area','areaTotal','surface','area_total']);
+    const area = areaRaw ? (areaRaw.match(/[0-9\.,]+/)?.[0] ? `${areaRaw.match(/[0-9\.,]+/)![0]} m²` : `${areaRaw} m²`) : (firstMatch(combined, [/([0-9\.,]+)\s*m²\s*(?:totales?|terreno|útiles?)/i, /(?:superficie total|terreno)[^\d]{0,30}([0-9\.,]+)\s*m/i]) || null);
+
+    let commune: string | null = getJsonLdFirst(['addressLocality','address.region','addressRegion','addressLocality']);
+    if (!commune) {
+      const m = html.match(/itemprop=["']addressLocality["'][^>]*>([^<]+)/i) || html.match(/addressLocality["']?[:=]["']?([^"'\s,<>]+)/i);
+      commune = m?.[1] ? clean(m[1]) : '';
+    }
+    commune = commune ? commune.toUpperCase() : null;
+
+    const operation = /arriendo|alquiler/i.test(`${title || ''} ${description || ''} ${combined}`) ? "ARRIENDO" : "VENTA";
 
     const data: PropertyData = {
       operation,
-      commune: commune.toUpperCase(),
+      commune,
       price,
-      area: area ? `${area} m²` : "",
+      area,
       bedrooms,
       bathrooms,
-      feature: inferFeature(`${title} ${description} ${plain}`),
+      feature: inferFeature(`${title || ''} ${description || ''} ${plain}`),
       title,
       description,
       images: pickImages(html, jsonLd)
