@@ -105,6 +105,31 @@ export default function Home() {
     } finally { setLoading(""); }
   }
 
+  async function sharePdf() {
+    if (!flyerRef.current) return setMessage("No hay flyer para compartir.");
+    if (!('canShare' in navigator) && !('share' in navigator)) return setMessage('Compartir no está disponible en este navegador.');
+    setLoading('Generando PDF para compartir…');
+    try {
+      const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')]);
+      const canvas = await html2canvas(flyerRef.current, { scale: 2, useCORS: true, backgroundColor: '#fff' });
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [210, 315] });
+      pdf.addImage(canvas.toDataURL('image/jpeg', 0.94), 'JPEG', 0, 0, 210, 315);
+      const blob = pdf.output('blob');
+      const file = new File([blob], `MEL-${data.operation}-${data.commune || 'propiedad'}.pdf`, { type: 'application/pdf' });
+      if ((navigator as any).canShare && (navigator as any).canShare({ files: [file] })) {
+        await (navigator as any).share({ files: [file], title: 'MEL Flyer', text: `${data.title || ''}` });
+      } else if ((navigator as any).share) {
+        // Fallback: provide a downloadable URL
+        const url = URL.createObjectURL(blob);
+        await (navigator as any).share({ title: 'MEL Flyer', text: `${data.title || ''} - Descargar: ${url}` }).catch(() => {});
+        URL.revokeObjectURL(url);
+      } else {
+        setMessage('Compartir no soportado para archivos en este dispositivo.');
+      }
+    } catch (e) { setMessage(e instanceof Error ? e.message : 'Error compartiendo PDF'); }
+    finally { setLoading(''); }
+  }
+
   const set = (key: keyof Data, value: string) => setData(d => ({ ...d, [key]: value }));
 
   return <main>
@@ -127,7 +152,10 @@ export default function Home() {
       <div className="actions"><button className="secondary" onClick={analyze}><Sparkles size={17}/> Elegir portada y destacado</button><button className="secondary" onClick={enhanceFirstFour}><Camera size={17}/> Mejorar 4 fotos con IA</button></div>
       {loading && <p className="status"><Loader2 className="spin" size={18}/>{loading}</p>}
       {message && <p className="message">{message}</p>}
-      <button className="download" onClick={downloadPdf}><Download size={19}/> Generar PDF</button>
+      <div style={{display:'flex',gap:8}}>
+        <button className="download" onClick={downloadPdf}><Download size={19}/> Generar PDF</button>
+        <button className="download" onClick={sharePdf}><Download size={19}/> Compartir</button>
+      </div>
       <p className="hint">Toca una miniatura en la vista previa para convertirla en portada.</p>
     </section>
 
