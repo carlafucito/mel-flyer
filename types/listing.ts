@@ -1,11 +1,19 @@
+export type PhotoRecommendationRole = "main" | "secondary" | "discard";
+
 export type PhotoWatermarkAnalysis = {
   index: number;
-  commercialQualityScore: number;
-  description: string;
+  commercialScore: number;
+  recommendedRole: PhotoRecommendationRole;
+  roomType: string;
+  strengths: string[];
+  weaknesses: string[];
+  reason: string;
+  commercialQualityScore?: number;
+  description?: string;
   hasWatermark: boolean;
   watermarkConfidence: number;
   watermarkDescription: string | null;
-  warnings: string[];
+  warnings?: string[];
 };
 
 export type PropertyAnalysis = {

@@ -1,46 +1,133 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
-import type { PropertyAnalysis } from "@/types/listing";
+import type { PhotoWatermarkAnalysis, PropertyAnalysis } from "@/types/listing";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-function normalizeAnalysis(payload: any, imageCount: number): PropertyAnalysis {
-  const safeMainIndex = Number.isInteger(payload?.mainPhotoIndex) && payload.mainPhotoIndex >= 0 && payload.mainPhotoIndex < imageCount
-    ? payload.mainPhotoIndex
-    : 0;
+const ROOM_TYPES = [
+  "Fachada",
+  "Living",
+  "Comedor",
+  "Cocina",
+  "Dormitorio",
+  "Dormitorio principal",
+  "Baño",
+  "Terraza",
+  "Jardín",
+  "Piscina",
+  "Quincho",
+  "Vista",
+  "Estacionamiento",
+  "Bodega",
+  "Oficina",
+  "Área común",
+  "Plano",
+  "Otro"
+] as const;
 
-  const secondaryIndexes: number[] = Array.isArray(payload?.secondaryPhotoIndexes)
-    ? payload.secondaryPhotoIndexes.filter((value: unknown): value is number => typeof value === "number" && Number.isInteger(value))
-        .filter((value: number) => value >= 0 && value < imageCount)
-        .slice(0, 3)
-    : [];
-
-  const uniqueSecondaries: number[] = Array.from(new Set(secondaryIndexes));
-  if (uniqueSecondaries.length < 3 && imageCount > 1) {
-    for (let index = 0; index < imageCount && uniqueSecondaries.length < 3; index += 1) {
-      if (index !== safeMainIndex && !uniqueSecondaries.includes(index)) {
-        uniqueSecondaries.push(index);
-      }
+function normalizeRole(value: unknown): "main" | "secondary" | "discard" {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "main" || normalized === "secondary" || normalized === "discard") {
+      return normalized;
     }
   }
+  return "discard";
+}
 
-  const photoAnalysis = Array.from({ length: imageCount }, (_, index) => {
-    const item = Array.isArray(payload?.photoAnalysis) ? payload.photoAnalysis[index] : null;
-    const warnings = Array.isArray(item?.warnings)
-      ? item.warnings.filter((warning: unknown) => typeof warning === "string")
-      : [];
+function normalizeRoomType(value: unknown): string {
+  if (typeof value === "string" && value.trim()) {
+    const trimmed = value.trim();
+    return ROOM_TYPES.includes(trimmed as (typeof ROOM_TYPES)[number]) ? trimmed : "Otro";
+  }
+  return "Otro";
+}
+
+function normalizeStringArray(value: unknown, maxItems = 4): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function normalizeCommercialScore(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(100, Math.round(parsed)));
+}
+
+function normalizeAnalysis(payload: any, imageCount: number): PropertyAnalysis {
+  const photoItems = Array.isArray(payload?.photoAnalysis) ? payload.photoAnalysis : [];
+  const claimedMainIndex = Number.isInteger(payload?.mainPhotoIndex) && payload.mainPhotoIndex >= 0 && payload.mainPhotoIndex < imageCount
+    ? payload.mainPhotoIndex
+    : -1;
+  const claimedSecondaries: number[] = Array.isArray(payload?.secondaryPhotoIndexes)
+    ? payload.secondaryPhotoIndexes.filter((value: unknown): value is number => typeof value === "number" && Number.isInteger(value))
+        .filter((value: number) => value >= 0 && value < imageCount)
+    : [];
+
+  const normalizedPhotoAnalysis: PhotoWatermarkAnalysis[] = Array.from({ length: imageCount }, (_, index) => {
+    const item = photoItems[index] ?? null;
+    const commercialScore = normalizeCommercialScore(item?.commercialScore ?? item?.commercialQualityScore);
+    const reason = typeof item?.reason === "string" && item.reason.trim()
+      ? item.reason.trim()
+      : (typeof item?.description === "string" && item.description.trim()
+        ? item.description.trim()
+        : "");
 
     return {
       index,
-      commercialQualityScore: Number.isFinite(Number(item?.commercialQualityScore)) ? Math.max(0, Math.min(100, Number(item.commercialQualityScore))) : 0,
-      description: typeof item?.description === "string" ? item.description : "",
+      commercialScore,
+      recommendedRole: normalizeRole(item?.recommendedRole),
+      roomType: normalizeRoomType(item?.roomType),
+      strengths: normalizeStringArray(item?.strengths),
+      weaknesses: normalizeStringArray(item?.weaknesses),
+      reason,
+      commercialQualityScore: commercialScore,
+      description: reason,
       hasWatermark: Boolean(item?.hasWatermark),
-      watermarkConfidence: Number.isFinite(Number(item?.watermarkConfidence)) ? Math.max(0, Math.min(100, Number(item.watermarkConfidence))) : 0,
+      watermarkConfidence: Number.isFinite(Number(item?.watermarkConfidence)) ? Number(item.watermarkConfidence) : 0,
       watermarkDescription: typeof item?.watermarkDescription === "string" ? item.watermarkDescription : null,
-      warnings
+      warnings: normalizeStringArray(item?.warnings)
     };
   });
+
+  let mainIndex = claimedMainIndex;
+  if (mainIndex < 0 || mainIndex >= imageCount) {
+    const mainCandidate = normalizedPhotoAnalysis.findIndex((item) => item.recommendedRole === "main");
+    mainIndex = mainCandidate >= 0 ? mainCandidate : 0;
+  }
+
+  let secondaryIndexes = claimedSecondaries.slice(0, 3);
+  const derivedSecondaries = normalizedPhotoAnalysis
+    .filter((item) => item.recommendedRole === "secondary")
+    .map((item) => item.index);
+  if (derivedSecondaries.length >= 3) {
+    secondaryIndexes = derivedSecondaries.slice(0, 3);
+  } else {
+    secondaryIndexes = Array.from(new Set([...secondaryIndexes, ...derivedSecondaries]));
+    const remainingCandidates = normalizedPhotoAnalysis
+      .filter((item) => item.index !== mainIndex && !secondaryIndexes.includes(item.index))
+      .sort((a, b) => b.commercialScore - a.commercialScore)
+      .map((item) => item.index);
+    for (const candidate of remainingCandidates) {
+      if (secondaryIndexes.length >= 3) break;
+      secondaryIndexes.push(candidate);
+    }
+  }
+  secondaryIndexes = Array.from(new Set(secondaryIndexes)).slice(0, 3);
+
+  const photoAnalysis: PhotoWatermarkAnalysis[] = normalizedPhotoAnalysis.map((item) => ({
+    ...item,
+    recommendedRole: item.index === mainIndex
+      ? "main"
+      : secondaryIndexes.includes(item.index)
+        ? "secondary"
+        : "discard"
+  }));
 
   return {
     marketingSummary: typeof payload?.marketingSummary === "string" && payload.marketingSummary.trim()
@@ -52,8 +139,8 @@ function normalizeAnalysis(payload: any, imageCount: number): PropertyAnalysis {
     featuredFeatureCategory: typeof payload?.featuredFeatureCategory === "string" && payload.featuredFeatureCategory.trim()
       ? payload.featuredFeatureCategory.trim()
       : "Otro",
-    mainPhotoIndex: safeMainIndex,
-    secondaryPhotoIndexes: uniqueSecondaries,
+    mainPhotoIndex: mainIndex >= 0 && mainIndex < imageCount ? mainIndex : 0,
+    secondaryPhotoIndexes: secondaryIndexes.filter((index) => index >= 0 && index < imageCount),
     analysisWarnings: Array.isArray(payload?.analysisWarnings)
       ? payload.analysisWarnings.filter((warning: unknown) => typeof warning === "string")
       : [],
@@ -93,12 +180,15 @@ Estructura exacta del JSON:
   "marketingSummary": "",
   "photoAnalysis": [{
     "index": 0,
-    "commercialQualityScore": 0,
-    "description": "",
+    "commercialScore": 0,
+    "recommendedRole": "main",
+    "roomType": "Fachada",
+    "strengths": [""],
+    "weaknesses": [""],
     "hasWatermark": false,
-    "watermarkConfidence": 0,
+    "watermarkConfidence": 0.03,
     "watermarkDescription": null,
-    "warnings": []
+    "reason": ""
   }],
   "analysisWarnings": []
 }
@@ -115,6 +205,7 @@ Reglas:
 - Prioriza fachada, living, cocina, jardín, piscina, terraza, quincho o vista cuando tengan valor comercial.
 - El quinto círculo debe ser una característica verificable en el texto o en las imágenes, sin inventar atributos.
 - El resumen comercial debe ser profesional, directo y útil, máximo dos líneas.
+- Para cada foto asigna un commercialScore entero entre 0 y 100, un recommendedRole, un roomType, strengths, weaknesses y una reason breve, en una sola frase.
 - Para cada foto detecta marcas de agua y marca si son reutilizables. No las elimines.`
     }];
 

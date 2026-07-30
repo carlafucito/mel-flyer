@@ -83,8 +83,25 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
         setAnalyzing(false);
         return;
       }
-      setAnalysis(json);
-      setAnalysisMessage('Análisis completado.');
+
+      const mergedAnalysis = analysis
+        ? {
+            ...json,
+            featuredFeature: analysis.featuredFeature || json.featuredFeature,
+            marketingSummary: analysis.marketingSummary || json.marketingSummary,
+            mainPhotoIndex: analysis.mainPhotoIndex ?? json.mainPhotoIndex,
+            secondaryPhotoIndexes: analysis.secondaryPhotoIndexes?.length ? analysis.secondaryPhotoIndexes : json.secondaryPhotoIndexes,
+            photoAnalysis: json.photoAnalysis?.map((item: any, index: number) => ({
+              ...item,
+              recommendedRole: index === (analysis.mainPhotoIndex ?? json.mainPhotoIndex)
+                ? 'main'
+                : (analysis.secondaryPhotoIndexes?.includes(index) ? 'secondary' : item.recommendedRole || 'discard')
+            })) || []
+          }
+        : json;
+
+      setAnalysis(mergedAnalysis);
+      setAnalysisMessage(analysis ? 'Se conservaron los cambios manuales actuales. Revisa el nuevo análisis.' : 'Análisis completado.');
     } catch (error) {
       setAnalysisMessage(error instanceof Error ? error.message : 'Error de IA');
     } finally {
@@ -232,7 +249,8 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
                 <img src={data.images[analysis.mainPhotoIndex] || data.images[0] || ""} alt="Portada recomendada" className="w-24 h-24 rounded-md object-cover" />
                 <div className="flex-1">
                   <div className="text-xs uppercase text-gray-500">Foto #{analysis.mainPhotoIndex + 1}</div>
-                  <div className="mt-1 text-sm">{analysis.photoAnalysis[analysis.mainPhotoIndex]?.description || "Portada recomendada por calidad comercial."}</div>
+                  <div className="mt-1 text-sm">{analysis.photoAnalysis[analysis.mainPhotoIndex]?.reason || analysis.photoAnalysis[analysis.mainPhotoIndex]?.description || "Portada recomendada por calidad comercial."}</div>
+                  <div className="mt-1 text-xs text-gray-500">Puntaje comercial: {analysis.photoAnalysis[analysis.mainPhotoIndex]?.commercialScore ?? analysis.photoAnalysis[analysis.mainPhotoIndex]?.commercialQualityScore ?? 0}</div>
                 </div>
               </div>
               <div className="mt-2 flex gap-2">
@@ -251,6 +269,44 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
                       {analysis.secondaryPhotoIndexes.includes(index) ? "Mantener" : "Agregar"}
                     </button>
                   </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-gray-200 p-3">
+              <div className="font-semibold mb-2">Detalle por fotografía</div>
+              <div className="space-y-2">
+                {analysis.photoAnalysis.map((photo) => (
+                  <details key={photo.index} className="rounded-md border border-gray-200 p-2">
+                    <summary className="cursor-pointer text-sm font-medium">
+                      Foto #{photo.index + 1} · {photo.roomType || 'Otro'} · {photo.recommendedRole === 'main' ? 'Portada' : photo.recommendedRole === 'secondary' ? 'Secundaria' : 'Descartar'}
+                    </summary>
+                    <div className="mt-2 space-y-2 text-xs text-gray-600">
+                      <div>Puntaje comercial: {photo.commercialScore}</div>
+                      <div>Razón: {photo.reason || 'Sin detalle disponible.'}</div>
+                      {photo.hasWatermark && (
+                        <div className="rounded bg-amber-50 px-2 py-1 text-amber-700">
+                          Marca de agua detectada · {photo.watermarkConfidence > 0 ? `${photo.watermarkConfidence}` : 'confianza baja'}
+                        </div>
+                      )}
+                      {photo.strengths.length > 0 && (
+                        <div>
+                          <div className="font-semibold text-gray-700">Fortalezas</div>
+                          <ul className="list-disc list-inside">
+                            {photo.strengths.map((strength, index) => <li key={`${photo.index}-${index}`}>{strength}</li>)}
+                          </ul>
+                        </div>
+                      )}
+                      {photo.weaknesses.length > 0 && (
+                        <div>
+                          <div className="font-semibold text-gray-700">Debilidades</div>
+                          <ul className="list-disc list-inside">
+                            {photo.weaknesses.map((weakness, index) => <li key={`${photo.index}-${index}`}>{weakness}</li>)}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  </details>
                 ))}
               </div>
             </div>
