@@ -4,6 +4,8 @@ import { useState } from "react";
 import BrokerSelect from "../components/BrokerSelect";
 import InputField from "../components/InputField";
 import PrimaryButton from "../components/PrimaryButton";
+import dynamic from 'next/dynamic';
+const ListingEditor = dynamic(() => import('../components/ListingEditor'), { ssr: false });
 
 const BROKERS = [
   { name: "Carla Fucito", phone: "+56 9 7558 2708" },
@@ -19,22 +21,32 @@ export default function Home() {
   const [brokerIndex, setBrokerIndex] = useState<number>(0);
   const [url, setUrl] = useState<string>("");
   const [message, setMessage] = useState<string>("");
+  const [status, setStatus] = useState<string | null>(null);
+  const [extracted, setExtracted] = useState<any | null>(null);
 
   function validateUrl(value: string) {
     try { new URL(value); return true; } catch { return false; }
   }
 
-  function onExtract() {
-    setMessage("");
+  async function onExtract() {
+    setMessage(""); setStatus('extracting'); setExtracted(null);
     if (!validateUrl(url)) {
-      setMessage("Por favor ingresa una URL válida.");
-      return;
+      setMessage("Por favor ingresa una URL válida."); setStatus(null); return;
     }
-    const selected = BROKERS[brokerIndex];
-    const payload = { broker: selected.name, phone: selected.phone, url };
-    // kept in memory (state). Ready for next phases.
-    console.log("Saved payload:", payload);
-    setMessage("URL válida. Datos guardados localmente.");
+    try {
+      const res = await fetch('/api/extract-listing', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) });
+      const json = await res.json();
+      if (!res.ok || json.error) {
+        setMessage(json.error || 'No fue posible extraer el aviso'); setStatus('failed'); return;
+      }
+      const { status: st, result } = json;
+      setExtracted(result);
+      if (st === 'ok') { setStatus('found'); setMessage('Datos encontrados'); }
+      else if (st === 'partial') { setStatus('partial'); setMessage('Extracción parcial: complete los campos faltantes'); }
+      else { setStatus('notfound'); setMessage('No fue posible extraer el aviso'); }
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : 'Error'); setStatus('failed');
+    }
   }
 
   const selectedBroker = BROKERS[brokerIndex];
@@ -61,8 +73,16 @@ export default function Home() {
           <PrimaryButton onClick={onExtract}>Extraer información</PrimaryButton>
         </div>
 
+        {status === 'extracting' && <div className="mt-4 text-sm text-center text-gray-700">Extrayendo…</div>}
         {message && <div className="mt-4 text-sm text-center text-gray-700">{message}</div>}
       </div>
+      {extracted && (
+        <div className="mt-6 flex justify-center">
+          <div>
+            <ListingEditor initial={extracted} onBack={() => setExtracted(null)} />
+          </div>
+        </div>
+      )}
     </main>
   );
 }
