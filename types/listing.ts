@@ -1,11 +1,15 @@
 export type PhotoWatermarkAnalysis = {
+  index: number;
+  commercialQualityScore: number;
+  description: string;
   hasWatermark: boolean;
   watermarkConfidence: number;
-  watermarkDescription: string;
+  watermarkDescription: string | null;
+  warnings: string[];
 };
 
 export type PropertyAnalysis = {
-  propertyType: string;
+  propertyType?: string;
   marketingSummary: string;
   featuredFeature: string;
   featuredFeatureCategory: string;

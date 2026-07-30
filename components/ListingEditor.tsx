@@ -2,7 +2,7 @@
 
 import React, { useRef, useState } from "react";
 import html2canvas from "html2canvas";
-import { ListingResult } from "@/types/listing";
+import { ListingResult, PropertyAnalysis } from "@/types/listing";
 import InputField from "./InputField";
 import PrimaryButton from "./PrimaryButton";
 import FlyerPreview from "./FlyerPreview";
@@ -31,6 +31,26 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
       if (j < 0 || j >= arr.length) return d;
       const tmp = arr[j]; arr[j] = arr[i]; arr[i] = tmp;
       return { ...d, images: arr };
+    });
+  }
+
+  function updateAnalysisField<K extends keyof PropertyAnalysis>(key: K, value: PropertyAnalysis[K]) {
+    setAnalysis(prev => prev ? { ...prev, [key]: value } : prev);
+  }
+
+  function setMainPhoto(index: number) {
+    setMainIndex(index);
+    updateAnalysisField("mainPhotoIndex", index);
+  }
+
+  function toggleSecondaryPhoto(index: number) {
+    setAnalysis(prev => {
+      if (!prev) return prev;
+      const current = prev.secondaryPhotoIndexes.includes(index);
+      const next = current
+        ? prev.secondaryPhotoIndexes.filter(item => item !== index)
+        : [...prev.secondaryPhotoIndexes.filter(item => item !== index), index].slice(0, 3);
+      return { ...prev, secondaryPhotoIndexes: next };
     });
   }
 
@@ -205,13 +225,53 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
       {analysis && (
         <div className="mt-6 bg-white rounded-xl shadow-md p-6">
           <h3 className="text-base font-semibold mb-3">Análisis IA</h3>
-          <div className="space-y-2 text-sm text-gray-700">
-            <div><strong>Tipo de propiedad:</strong> {analysis.propertyType}</div>
-            <div><strong>Resumen comercial:</strong> {analysis.marketingSummary}</div>
-            <div><strong>Quinto círculo:</strong> {analysis.featuredFeature}</div>
-            <div><strong>Categoría:</strong> {analysis.featuredFeatureCategory}</div>
-            <div><strong>Portada:</strong> {analysis.mainPhotoIndex + 1}</div>
-            <div><strong>Secundarias:</strong> {analysis.secondaryPhotoIndexes.join(', ')}</div>
+          <div className="space-y-4 text-sm text-gray-700">
+            <div className="rounded-lg border border-gray-200 p-3">
+              <div className="font-semibold mb-2">Portada recomendada</div>
+              <div className="flex items-center gap-3">
+                <img src={data.images[analysis.mainPhotoIndex] || data.images[0] || ""} alt="Portada recomendada" className="w-24 h-24 rounded-md object-cover" />
+                <div className="flex-1">
+                  <div className="text-xs uppercase text-gray-500">Foto #{analysis.mainPhotoIndex + 1}</div>
+                  <div className="mt-1 text-sm">{analysis.photoAnalysis[analysis.mainPhotoIndex]?.description || "Portada recomendada por calidad comercial."}</div>
+                </div>
+              </div>
+              <div className="mt-2 flex gap-2">
+                <button className="text-xs rounded border border-gray-300 px-2 py-1" onClick={() => setMainPhoto(analysis.mainPhotoIndex)}>Mantener recomendación</button>
+                <button className="text-xs rounded border border-gray-300 px-2 py-1" onClick={() => setMainPhoto(mainIndex)}>Usar portada actual</button>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-gray-200 p-3">
+              <div className="font-semibold mb-2">Fotografías secundarias</div>
+              <div className="grid grid-cols-3 gap-2">
+                {analysis.secondaryPhotoIndexes.map((index) => (
+                  <div key={index} className="space-y-1">
+                    <img src={data.images[index] || ""} alt={`Secundaria ${index + 1}`} className="w-full h-20 rounded-md object-cover" />
+                    <button className="w-full text-xs rounded border border-gray-300 px-2 py-1" onClick={() => toggleSecondaryPhoto(index)}>
+                      {analysis.secondaryPhotoIndexes.includes(index) ? "Mantener" : "Agregar"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-gray-200 p-3">
+              <label className="block font-semibold mb-2">Característica destacada</label>
+              <input value={analysis.featuredFeature} onChange={(e) => updateAnalysisField("featuredFeature", e.target.value)} className="w-full rounded-md border px-3 py-2" />
+              <div className="mt-2 text-xs text-gray-500">Categoría: {analysis.featuredFeatureCategory || "Otro"}</div>
+            </div>
+
+            <div className="rounded-lg border border-gray-200 p-3">
+              <label className="block font-semibold mb-2">Resumen comercial</label>
+              <textarea value={analysis.marketingSummary} onChange={(e) => updateAnalysisField("marketingSummary", e.target.value)} className="w-full rounded-md border px-3 py-2 h-24" />
+            </div>
+
+            {analysis.photoAnalysis.some((item) => item.hasWatermark) && (
+              <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-amber-800">
+                Se detectaron fotografías con marca de agua. Puedes continuar o reemplazarlas por imágenes originales para obtener un resultado más profesional.
+              </div>
+            )}
+
             {analysis.analysisWarnings.length > 0 && (
               <div className="rounded-md bg-yellow-50 border border-yellow-200 p-3">
                 <strong>Avisos:</strong>
