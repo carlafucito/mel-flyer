@@ -1,9 +1,7 @@
 "use client";
 
-import React, { useRef, useState } from "react";
-import html2canvas from "html2canvas";
+import React, { useEffect, useRef, useState } from "react";
 import { ListingResult, PropertyAnalysis } from "@/types/listing";
-import InputField from "./InputField";
 import PrimaryButton from "./PrimaryButton";
 import FlyerPreview from "./FlyerPreview";
 
@@ -13,7 +11,8 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
   const [analysis, setAnalysis] = useState(initial.analysis ?? null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisMessage, setAnalysisMessage] = useState<string>("");
-  const flyerRef = useRef<HTMLDivElement>(null);
+  const [pendingReplaceIndex, setPendingReplaceIndex] = useState<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   function setField<K extends keyof ListingResult>(key: K, value: ListingResult[K]) {
     setData(d => ({ ...d, [key]: value }));
@@ -33,6 +32,12 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
       return { ...d, images: arr };
     });
   }
+
+  useEffect(() => {
+    if (analysis?.mainPhotoIndex !== undefined && analysis.mainPhotoIndex !== mainIndex) {
+      setMainIndex(analysis.mainPhotoIndex);
+    }
+  }, [analysis?.mainPhotoIndex, mainIndex]);
 
   function updateAnalysisField<K extends keyof PropertyAnalysis>(key: K, value: PropertyAnalysis[K]) {
     setAnalysis(prev => prev ? { ...prev, [key]: value } : prev);
@@ -84,24 +89,27 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
         return;
       }
 
-      const mergedAnalysis = analysis
+      const mergeManualValues = Boolean(analysis);
+      const mergedAnalysis = mergeManualValues
         ? {
             ...json,
-            featuredFeature: analysis.featuredFeature || json.featuredFeature,
-            marketingSummary: analysis.marketingSummary || json.marketingSummary,
-            mainPhotoIndex: analysis.mainPhotoIndex ?? json.mainPhotoIndex,
-            secondaryPhotoIndexes: analysis.secondaryPhotoIndexes?.length ? analysis.secondaryPhotoIndexes : json.secondaryPhotoIndexes,
+            featuredFeature: analysis?.featuredFeature || json.featuredFeature,
+            marketingSummary: analysis?.marketingSummary || json.marketingSummary,
+            mainPhotoIndex: analysis?.mainPhotoIndex ?? json.mainPhotoIndex,
+            secondaryPhotoIndexes: analysis?.secondaryPhotoIndexes?.length ? analysis.secondaryPhotoIndexes : json.secondaryPhotoIndexes,
             photoAnalysis: json.photoAnalysis?.map((item: any, index: number) => ({
               ...item,
-              recommendedRole: index === (analysis.mainPhotoIndex ?? json.mainPhotoIndex)
+              recommendedRole: index === (analysis?.mainPhotoIndex ?? json.mainPhotoIndex)
                 ? 'main'
-                : (analysis.secondaryPhotoIndexes?.includes(index) ? 'secondary' : item.recommendedRole || 'discard')
+                : (analysis?.secondaryPhotoIndexes?.includes(index) ? 'secondary' : item.recommendedRole || 'discard')
             })) || []
           }
         : json;
 
       setAnalysis(mergedAnalysis);
-      setAnalysisMessage(analysis ? 'Se conservaron los cambios manuales actuales. Revisa el nuevo análisis.' : 'Análisis completado.');
+      setMainIndex(mergedAnalysis.mainPhotoIndex ?? 0);
+      setField('feature', mergedAnalysis.featuredFeature || data.feature);
+      setAnalysisMessage(mergeManualValues ? 'Se conservaron los cambios manuales actuales. Revisa el nuevo análisis.' : 'Análisis completado.');
     } catch (error) {
       setAnalysisMessage(error instanceof Error ? error.message : 'Error de IA');
     } finally {
@@ -109,24 +117,23 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
     }
   }
 
-  async function downloadFlyer() {
-    if (!flyerRef.current) return;
-    const canvas = await html2canvas(flyerRef.current, { scale: 2 });
-    const link = document.createElement('a');
-    link.href = canvas.toDataURL('image/png');
-    link.download = 'flyer-mel.png';
-    link.click();
+  async function replaceImageAtIndex(index: number, file: File | null) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = String(reader.result);
+      setData(d => {
+        const nextImages = [...d.images];
+        nextImages[index] = url;
+        return { ...d, images: nextImages };
+      });
+    };
+    reader.readAsDataURL(file);
   }
 
-  async function shareFlyer() {
-    if (!flyerRef.current || !navigator.canShare) return;
-    const canvas = await html2canvas(flyerRef.current, { scale: 2 });
-    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve));
-    if (!blob) return;
-    const file = new File([blob], 'flyer-mel.png', { type: 'image/png' });
-    if (navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: 'Flyer MEL Propiedades', text: data.title || 'Flyer MEL' });
-    }
+  function openReplaceImage(index: number) {
+    setPendingReplaceIndex(index);
+    fileInputRef.current?.click();
   }
 
   return (
@@ -209,21 +216,39 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
           <label className="block text-xs text-gray-600">Galería</label>
           <div className="grid grid-cols-3 gap-2 mt-2">
             {data.images.length === 0 && <div className="col-span-3 text-sm text-gray-500">No se encontraron fotos. Carga manualmente.</div>}
-            {data.images.map((src, i) => (
-              <div key={i} className="relative">
-                <img src={src} alt={`img-${i}`} className={`w-full h-24 object-cover rounded ${i===mainIndex? 'ring-2 ring-melred':''}`} />
-                <div className="flex gap-1 mt-1">
-                  <button className="text-xs bg-white px-1 rounded" onClick={() => moveImage(i, -1)}>←</button>
-                  <button className="text-xs bg-white px-1 rounded" onClick={() => moveImage(i, 1)}>→</button>
-                  <button className="text-xs bg-white px-1 rounded" onClick={() => { setMainIndex(i); }}>Principal</button>
-                  <button className="text-xs bg-white px-1 rounded" onClick={() => removeImage(i)}>Eliminar</button>
+            {data.images.map((src, i) => {
+              const isMainSelected = (analysis?.mainPhotoIndex ?? mainIndex) === i;
+              const isSecondarySelected = analysis?.secondaryPhotoIndexes.includes(i) ?? false;
+              return (
+                <div key={i} className="relative">
+                  <img src={src} alt={`img-${i}`} className={`w-full h-24 object-cover rounded ${isMainSelected ? 'ring-2 ring-melred' : isSecondarySelected ? 'ring-2 ring-amber-400' : ''}`} />
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {isMainSelected && <span className="text-[10px] bg-melred text-white px-1 rounded">Portada</span>}
+                    {isSecondarySelected && <span className="text-[10px] bg-amber-500 text-white px-1 rounded">Secundaria</span>}
+                  </div>
+                  <div className="flex gap-1 mt-1 flex-wrap">
+                    <button className="text-xs bg-white px-1 rounded" onClick={() => moveImage(i, -1)}>←</button>
+                    <button className="text-xs bg-white px-1 rounded" onClick={() => moveImage(i, 1)}>→</button>
+                    <button className="text-xs bg-white px-1 rounded" onClick={() => setMainPhoto(i)}>Portada</button>
+                    <button className="text-xs bg-white px-1 rounded" onClick={() => toggleSecondaryPhoto(i)}>{isSecondarySelected ? 'Quitar' : 'Secundaria'}</button>
+                    <button className="text-xs bg-white px-1 rounded" onClick={() => openReplaceImage(i)}>Reemplazar</button>
+                    <button className="text-xs bg-white px-1 rounded" onClick={() => removeImage(i)}>Eliminar</button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           <div className="mt-2">
             <label className="block text-xs text-gray-600">Agregar fotos</label>
             <input type="file" accept="image/*" multiple onChange={(e) => addFiles(e.target.files)} />
+            <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => {
+              const file = e.target.files?.[0] ?? null;
+              if (pendingReplaceIndex !== null) {
+                replaceImageAtIndex(pendingReplaceIndex, file);
+              }
+              setPendingReplaceIndex(null);
+              e.target.value = '';
+            }} />
           </div>
         </div>
 
@@ -232,10 +257,6 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
             {analyzing ? 'Analizando con IA...' : 'Analizar con IA'}
           </PrimaryButton>
           {analysisMessage && <div className="text-sm text-gray-700">{analysisMessage}</div>}
-          <div className="grid grid-cols-2 gap-2">
-            <button className="w-full bg-white border border-gray-300 text-gray-700 font-semibold py-3 rounded-md shadow" onClick={downloadFlyer}>Descargar PNG</button>
-            <button className="w-full bg-white border border-gray-300 text-gray-700 font-semibold py-3 rounded-md shadow" onClick={shareFlyer}>Compartir</button>
-          </div>
         </div>
       </div>
 
@@ -341,7 +362,7 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
       )}
 
       {analysis && (
-        <div className="mt-6 bg-white rounded-xl shadow-md p-6" ref={flyerRef}>
+        <div className="mt-6 bg-white rounded-xl shadow-md p-6">
           <FlyerPreview listing={{ ...data, analysis }} brokerName="" brokerPhone="" />
         </div>
       )}
