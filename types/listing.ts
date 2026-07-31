@@ -27,6 +27,13 @@ export type PropertyAnalysis = {
   photoAnalysis: PhotoWatermarkAnalysis[];
 };
 
+export type ExtractionSource = {
+  field: string;
+  source: string;
+  rawValue: string | null;
+  normalizedValue: string | null;
+};
+
 export type ListingResult = {
   operation: string; // VENTA | ARRIENDO
   commune: string | null;
@@ -48,4 +55,6 @@ export type ListingResult = {
   orientacion?: string | null;
   analysis?: PropertyAnalysis | null;
   missing?: string[];
+  extractionWarnings?: string[];
+  extractionSources?: ExtractionSource[];
 }

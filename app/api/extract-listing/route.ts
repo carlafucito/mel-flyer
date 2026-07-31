@@ -1,15 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ListingResult } from "@/types/listing";
+import { ExtractionSource, ListingResult } from "@/types/listing";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const clean = (value: unknown) => String(value ?? "").replace(/\s+/g, " ").trim();
+const normalizeText = (value: unknown) => clean(value).replace(/\s*[-|–|\\|]\s*Portal Inmobiliario.*$/i, '').trim();
 
 function firstMatch(text: string, patterns: RegExp[]): string {
   for (const pattern of patterns) {
     const match = text.match(pattern);
     if (match?.[1]) return clean(match[1]);
+    if (match?.[0]) return clean(match[0]);
   }
   return "";
 }
@@ -78,6 +80,72 @@ function inferFeature(text: string): string {
   return options.find(([, regex]) => regex.test(text))?.[0] ?? "DESTACADO";
 }
 
+function sanitizeNumber(value: string): string | null {
+  const cleaned = value.replace(/[^0-9.,]/g, "").trim();
+  if (!cleaned) return null;
+  const lastDot = cleaned.lastIndexOf(".");
+  const lastComma = cleaned.lastIndexOf(",");
+  if (lastDot > lastComma) {
+    return cleaned.replace(/,/g, "").replace(/\.(?=[^\.]*$)/g, "");
+  }
+  if (lastComma > lastDot) {
+    return cleaned.replace(/\./g, "").replace(/,(?=[^,]*$)/g, "");
+  }
+  return cleaned.replace(/,/g, "");
+}
+
+function normalizeCurrency(value: string): string {
+  const cleaned = value.toUpperCase();
+  if (/UF/i.test(cleaned)) return "UF";
+  if (/USD|US\$|U\$S/i.test(cleaned)) return "USD";
+  if (/\$/i.test(cleaned)) return "CLP";
+  return "";
+}
+
+function normalizePrice(raw: string): { price: string | null; currency: string } {
+  const text = clean(raw);
+  if (!text) return { price: null, currency: "" };
+  const currency = normalizeCurrency(text);
+  const digits = sanitizeNumber(text) ?? "";
+  const price = digits ? digits.replace(/\.$/, "") : null;
+  return { price, currency };
+}
+
+function normalizeOperation(value: string): string {
+  const normalized = value.toUpperCase();
+  if (/ARRIENDO|ALQUILER/.test(normalized)) return "ARRIENDO";
+  return "VENTA";
+}
+
+function normalizePropertyType(value: string): string | null {
+  const normalized = value.toLowerCase();
+  if (/(casa|house|single family|single-family)/.test(normalized)) return "Casa";
+  if (/(departamento|depto|dpto|apartment|apto)/.test(normalized)) return "Departamento";
+  if (/(parcela|parcel)/.test(normalized)) return "Parcela";
+  if (/(oficina|office)/.test(normalized)) return "Oficina";
+  if (/(local comercial|local|comercial)/.test(normalized)) return "Local comercial";
+  if (/(terreno|land)/.test(normalized)) return "Terreno";
+  if (/(sitio)/.test(normalized)) return "Sitio";
+  if (/(bodega|warehouse)/.test(normalized)) return "Bodega";
+  if (/(estacionamiento|parking)/.test(normalized)) return "Estacionamiento";
+  return null;
+}
+
+function normalizeCommune(value: string | null): string | null {
+  const cleaned = clean(value).replace(/\b(?:sector|barrio|condominio|edificio|torre)\b/gi, "").trim();
+  return cleaned ? cleaned.replace(/\s+/g, " ").toUpperCase() : null;
+}
+
+function normalizeArea(value: string | null): string | null {
+  if (!value) return null;
+  const digits = sanitizeNumber(value);
+  return digits ? `${digits} m²` : null;
+}
+
+function addSource(sources: ExtractionSource[], field: string, source: string, rawValue: unknown, normalizedValue: unknown): void {
+  sources.push({ field, source, rawValue: clean(rawValue), normalizedValue: clean(normalizedValue) });
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -96,10 +164,10 @@ export async function POST(request: NextRequest) {
 
     const jsonLd = collectJsonLd(html);
     const plain = clean(html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ''));
-    const combined = `${plain} ${JSON.stringify(jsonLd)}`;
+    const combinedText = `${plain} ${JSON.stringify(jsonLd)}`;
 
     const getMetaFirst = (patterns: RegExp[]) => firstMatch(html, patterns);
-    const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
+    const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
     const getJsonLdFirst = (keys: string[]) => {
       for (const key of keys) {
@@ -110,78 +178,90 @@ export async function POST(request: NextRequest) {
       return '';
     };
 
-    // Title and description: prefer JSON-LD, then meta tags, then fallbacks
+    const sources: ExtractionSource[] = [];
+
     const rawTitle = getJsonLdFirst(['name']) || getMetaFirst([/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i]) || firstMatch(html, [/<title>([^<]+)/i]);
-    const title = rawTitle ? clean(rawTitle.replace(/\s*[-|–|\\|]\s*Portal Inmobiliario.*$/i, '')) : null;
+    const title = rawTitle ? normalizeText(rawTitle) : null;
+    addSource(sources, 'title', 'json-ld/meta/title', rawTitle, title);
+
     let description = getJsonLdFirst(['description']) || getMetaFirst([/<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)["']/i]) || null;
     if (description && title) {
       const escapedTitle = escapeRegExp(title);
-      description = description.replace(new RegExp(`^${escapedTitle}[\s:\-–]*`, 'i'), '').trim();
+      description = description.replace(new RegExp(`^${escapedTitle}[\\s:\\-–]*`, 'i'), '').trim();
       description = description.replace(new RegExp(escapedTitle, 'gi'), '').trim();
       description = description || null;
     }
     if (description && title && description === title) description = null;
+    addSource(sources, 'description', 'json-ld/meta/description', description, description);
 
-    // Price and currency
-    const priceRaw = getJsonLdFirst(['price','offers','price']) || firstMatch(combined, [/(UF\s?[\d\.,]+)/i, /(\$\s?[\d\.,]+)/i]);
-    const currency = /UF/i.test(priceRaw) ? 'UF' : (/\$/.test(priceRaw) ? 'CLP' : '');
-    const price = priceRaw || null;
+    const rawOperation = firstMatch(`${title || ''} ${description || ''} ${combinedText}`.toLowerCase(), [/arriendo|alquiler/i, /venta/i]) || 'VENTA';
+    const operation = normalizeOperation(rawOperation);
+    addSource(sources, 'operation', 'text-analysis', rawOperation, operation);
 
-    // Bedrooms, bathrooms, parking: prefer ficha técnica / JSON-LD
+    const rawPriceCandidates = [
+      getJsonLdFirst(['price','offers.price','offers.priceSpecification.price','offers.priceCurrency']) || '',
+      firstMatch(combinedText, [/(UF\s?[\d\.,]+)/i, /(US\$\s?[\d\.,]+)/i, /(\$\s?[\d\.,]+)/i]),
+      firstMatch(combinedText, [/Precio[^\d]{0,10}([0-9\.,]+\s*(?:UF|US\$|\$)?)/i])
+    ].filter(Boolean);
+    const rawPrice = rawPriceCandidates[0] || '';
+    const normalizedPrice = normalizePrice(rawPrice);
+    const price = normalizedPrice.price;
+    const currency = normalizedPrice.currency || '';
+    addSource(sources, 'price', 'json-ld/text', rawPrice, price);
+    addSource(sources, 'currency', 'json-ld/text', rawPrice, currency);
+
     const technicalSection = html.match(/Ficha técnica[\s\S]{0,300}?<\/(?:(?:div|section|ul|li)|p)>/i)?.[0] || '';
-    const bedrooms = firstMatch(technicalSection, [/Dormitorios?\s*[:\-–]?\s*([0-9]+)/i, /([0-9]+)\s*Dormitorios?/i]) || getJsonLdFirst(['numberOfRooms','numberOfBedrooms','numBedrooms']) || firstMatch(combined, [/([0-9]+)\s*(?:dormitorios?|habitaciones?)/i, /(?:dormitorios?|habitaciones?)[^\d]{0,20}([0-9]+)/i]) || null;
-    const bathrooms = getJsonLdFirst(['numberOfBathroomsTotal','numberOfBathrooms','bathroomCount']) || firstMatch(combined, [/([0-9]+)\s*baños?/i, /baños?[^\d]{0,20}([0-9]+)/i]) || null;
-    const parking = getJsonLdFirst(['numberOfParkingSpaces','parking','parkingSpaces']) || firstMatch(combined, [/([0-9]+)\s*estacionamientos?/i, /estacionamiento[s]?[^\d]{0,20}([0-9]+)/i]) || null;
+    const bedroomsRaw = firstMatch(technicalSection, [/Dormitorios?\s*[:\-–]?\s*([0-9]+)/i, /([0-9]+)\s*Dormitorios?/i]) || getJsonLdFirst(['numberOfRooms','numberOfBedrooms','numBedrooms']) || firstMatch(combinedText, [/([0-9]+)\s*(?:dormitorios?|habitaciones?)/i, /(?:dormitorios?|habitaciones?)[^\d]{0,20}([0-9]+)/i]) || '';
+    const bathroomsRaw = getJsonLdFirst(['numberOfBathroomsTotal','numberOfBathrooms','bathroomCount']) || firstMatch(combinedText, [/([0-9]+)\s*baños?/i, /baños?[^\d]{0,20}([0-9]+)/i]) || '';
+    const parkingRaw = getJsonLdFirst(['numberOfParkingSpaces','parking','parkingSpaces']) || firstMatch(combinedText, [/([0-9]+)\s*estacionamientos?/i, /estacionamiento[s]?[^\d]{0,20}([0-9]+)/i]) || '';
+    const bedrooms = bedroomsRaw ? sanitizeNumber(bedroomsRaw) : null;
+    const bathrooms = bathroomsRaw ? sanitizeNumber(bathroomsRaw) : null;
+    const parking = parkingRaw ? sanitizeNumber(parkingRaw) : null;
+    addSource(sources, 'bedrooms', 'technical/text', bedroomsRaw, bedrooms);
+    addSource(sources, 'bathrooms', 'technical/text', bathroomsRaw, bathrooms);
+    addSource(sources, 'parking', 'technical/text', parkingRaw, parking);
 
-    // Areas: prefer JSON-LD (floorSize) then regex
-    const rawFloor = getJsonLdFirst(['floorSize','area','areaTotal','surface','area_total']);
-    const area_total = rawFloor ? (rawFloor.match(/[0-9\.,]+/)?.[0] ? `${rawFloor.match(/[0-9\.,]+/)![0]} m²` : `${rawFloor} m²`) : (firstMatch(combined, [/([0-9\.,]+)\s*m²\s*(?:totales?|terreno|útiles?)/i, /(?:superficie total|superficie)(?:[^\d]{0,30})([0-9\.,]+)\s*m/i]) || null);
-    const rawUsable = getJsonLdFirst(['areaUsable','area_usable','usableArea']) || firstMatch(combined, [/superficie úti[le]s?[\s:\-]*([0-9\.,]+)\s*m/i, /m²\s*útil\s*:?[\s]*([0-9\.,]+)/i]);
-    const area_usable = rawUsable ? (rawUsable.match(/[0-9\.,]+/)?.[0] ? `${rawUsable.match(/[0-9\.,]+/)![0]} m²` : `${rawUsable} m²`) : null;
-    const bodegas = getJsonLdFirst(['numberOfRooms','numberOfBodegas','bodegaCount']) || firstMatch(combined, [/Bodega[s]?\s*[:\-–]?\s*([0-9]+)/i, /Bodega[s]?.{0,20}?([0-9]+)/i]) || null;
-    const gastos_comunes = getJsonLdFirst(['commonCharges','gastosComunes','gastos_comunes']) || firstMatch(combined, [/Gastos comunes\s*[:\-–]?\s*([0-9\.,]+\s*(?:UF|\$)?)/i, /Gastos comunes.{0,30}?([0-9\.,]+\s*(?:UF|\$)?)/i]) || null;
-    const orientacion = getJsonLdFirst(['orientation','orientacion','orientación']) || firstMatch(combined, [/Orientaci[oó]n\s*[:\-–]?\s*([NSEWO]{1,5})/i, /Orientaci[oó]n\s*[:\-–]?\s*([A-Za-z ]+)/i]) || null;
+    const rawAreaTotal = getJsonLdFirst(['floorSize','area','areaTotal','surface','area_total']) || firstMatch(combinedText, [/([0-9\.,]+)\s*m²\s*(?:totales?|terreno|útiles?)/i, /(?:superficie total|superficie)(?:[^\d]{0,30})([0-9\.,]+)\s*m/i]) || '';
+    const rawAreaUsable = getJsonLdFirst(['areaUsable','area_usable','usableArea']) || firstMatch(combinedText, [/superficie úti[le]s?[\s:\-]*([0-9\.,]+)\s*m/i, /m²\s*útil\s*:?[^\d]*([0-9\.,]+)/i]) || '';
+    const area_total = normalizeArea(rawAreaTotal);
+    const area_usable = normalizeArea(rawAreaUsable);
+    addSource(sources, 'area_total', 'json-ld/text', rawAreaTotal, area_total);
+    addSource(sources, 'area_usable', 'json-ld/text', rawAreaUsable, area_usable);
 
-    // Commune: prefer structured address in JSON-LD, then explicit labels
-    let commune: string | null = getJsonLdFirst(['address.addressLocality','address.addressRegion','addressLocality','address.region','addressRegion']);
-    if (!commune) {
-      commune = getMetaFirst([/<meta[^>]+property=["']place:location:addressLocality["'][^>]+content=["']([^"']+)["']/i]) || firstMatch(html, [/Comuna\s*[:\-–]?\s*([^<\n]+)/i, /itemprop=["']addressLocality["'][^>]*>([^<]+)/i, /addressLocality["']?[:=]["']?([^"'\s,<>]+)/i]);
-    }
-    commune = commune ? clean(commune).toUpperCase() : null;
+    const bodegasRaw = getJsonLdFirst(['numberOfRooms','numberOfBodegas','bodegaCount']) || firstMatch(combinedText, [/Bodega[s]?\s*[:\-–]?\s*([0-9]+)/i, /Bodega[s]?.{0,20}?([0-9]+)/i]) || '';
+    const bodegas = bodegasRaw ? sanitizeNumber(bodegasRaw) : null;
+    addSource(sources, 'bodegas', 'text', bodegasRaw, bodegas);
 
-    // Operation
-    const operation = /arriendo|alquiler/i.test(`${title || ''} ${description || ''} ${combined}`) ? 'ARRIENDO' : 'VENTA';
+    const gastosComunesRaw = getJsonLdFirst(['commonCharges','gastosComunes','gastos_comunes']) || firstMatch(combinedText, [/Gastos comunes\s*[:\-–]?\s*([0-9\.,]+\s*(?:UF|\$)?)/i, /Gastos comunes.{0,30}?([0-9\.,]+\s*(?:UF|\$)?)/i]) || '';
+    const gastos_comunes = gastosComunesRaw ? clean(gastosComunesRaw) : null;
+    addSource(sources, 'gastos_comunes', 'text', gastosComunesRaw, gastos_comunes);
+
+    const orientacionRaw = getJsonLdFirst(['orientation','orientacion','orientación']) || firstMatch(combinedText, [/Orientaci[oó]n\s*[:\-–]?\s*([NSEWO]{1,5})/i, /Orientaci[oó]n\s*[:\-–]?\s*([A-Za-z ]+)/i]) || '';
+    const orientacion = orientacionRaw ? clean(orientacionRaw) : null;
+    addSource(sources, 'orientacion', 'text', orientacionRaw, orientacion);
+
+    const rawCommune = getJsonLdFirst(['address.addressLocality','address.addressRegion','addressLocality','address.region','addressRegion']) || getMetaFirst([/<meta[^>]+property=["']place:location:addressLocality["'][^>]+content=["']([^"']+)["']/i]) || firstMatch(html, [/Comuna\s*[:\-–]?\s*([^<\n]+)/i, /itemprop=["']addressLocality["'][^>]*>([^<]+)/i, /addressLocality["']?[:=]["']?([^"'\s,<>]+)/i]) || '';
+    const commune = normalizeCommune(rawCommune);
+    addSource(sources, 'commune', 'json-ld/meta/text', rawCommune, commune);
 
     const images = pickImages(html, jsonLd);
     const feature = inferFeature(`${title || ''} ${description || ''} ${plain}`);
 
-    // Property type: prefer JSON-LD @type or explicit fields, then keywords
     const rawType = getJsonLdFirst(['@type','type','category','propertyType','additionalType']) || '';
-    const detectFromText = (text: string) => {
-      const t = String(text || '').toLowerCase();
-      if (/\b(casa|casas|house|singlefamily|single family|single-family)\b/.test(t)) return 'Casa';
-      if (/\b(departamento|depto|dpto|apartment|apto)\b/.test(t)) return 'Departamento';
-      if (/\b(parcela|parcel)\b/.test(t)) return 'Parcela';
-      if (/\b(oficina|office)\b/.test(t)) return 'Oficina';
-      if (/\b(local comercial|local(?!izaci[oó]n)|comercial)\b/.test(t)) return 'Local comercial';
-      if (/\b(terreno|land)\b/.test(t)) return 'Terreno';
-      if (/\b(bodega|warehouse)\b/.test(t)) return 'Bodega';
-      if (/\b(estacionamiento|parking)\b/.test(t)) return 'Estacionamiento';
-      return null;
-    };
-    let propertyType = detectFromText(rawType) || detectFromText(`${title || ''} ${description || ''} ${combined}`) || null;
+    let propertyType = normalizePropertyType(rawType) || normalizePropertyType(`${title || ''} ${description || ''} ${combinedText}`) || null;
     if (!propertyType && rawType) {
       const cleanType = clean(rawType).toLowerCase();
       if (cleanType.includes('local')) propertyType = 'Local comercial';
       else if (cleanType.includes('estacionamiento')) propertyType = 'Estacionamiento';
       else if (cleanType.includes('bodega')) propertyType = 'Bodega';
     }
+    addSource(sources, 'propertyType', 'json-ld/text', rawType, propertyType);
 
     const result: ListingResult = {
       operation,
-      commune: commune,
-      price,
-      currency,
+      commune,
+      price: price || null,
+      currency: currency || '',
       area_total: area_total || null,
       area_usable: area_usable || null,
       bedrooms: bedrooms || null,
@@ -199,7 +279,15 @@ export async function POST(request: NextRequest) {
       missing: []
     };
 
-    // determine missing fields
+    const warnings: string[] = [];
+    if (!result.currency && result.price) warnings.push('Precio detectado sin moneda explícita');
+    if (result.price && result.gastos_comunes && String(result.gastos_comunes).includes(String(result.price))) warnings.push('Precio posiblemente confundido con gastos comunes');
+    if (result.description && title && result.description.toLowerCase() === title.toLowerCase()) warnings.push('Descripción iguala al título');
+    if (!result.commune && (title || description || plain)) warnings.push('No se pudo determinar la comuna con claridad');
+    if (result.area_total && result.area_usable && result.area_total === result.area_usable) warnings.push('Áreas útil y total duplicadas');
+    if (!result.title) warnings.push('Título no encontrado');
+    if (!result.description) warnings.push('Descripción no encontrada');
+
     const required = ['operation','commune','price','currency','area_total','bedrooms','bathrooms','title','description','propertyType'];
     for (const key of required) {
       // @ts-ignore
@@ -207,6 +295,8 @@ export async function POST(request: NextRequest) {
     }
 
     const status = result.missing && result.missing.length ? 'partial' : 'ok';
+    result.extractionWarnings = warnings;
+    result.extractionSources = sources;
 
     return NextResponse.json({ status, result });
   } catch (error) {
