@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { ListingResult, PropertyAnalysis } from "@/types/listing";
 import PrimaryButton from "./PrimaryButton";
-import FlyerPreview from "./FlyerPreview";
+import MelFlyerPreview from "./MelFlyerPreview";
 
 export default function ListingEditor({ initial, onBack }: { initial: ListingResult; onBack: () => void }) {
   const [data, setData] = useState<ListingResult>(initial);
@@ -12,6 +12,7 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisMessage, setAnalysisMessage] = useState<string>("");
   const [pendingReplaceIndex, setPendingReplaceIndex] = useState<number | null>(null);
+  const [showFlyerPreview, setShowFlyerPreview] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   function setField<K extends keyof ListingResult>(key: K, value: ListingResult[K]) {
@@ -256,6 +257,9 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
           <PrimaryButton onClick={analyzeWithAI}>
             {analyzing ? 'Analizando con IA...' : 'Analizar con IA'}
           </PrimaryButton>
+          <button className="w-full rounded-md border border-gray-300 bg-white px-3 py-3 text-sm font-semibold text-gray-700 shadow-sm" onClick={() => setShowFlyerPreview(true)}>
+            Generar flyer
+          </button>
           {analysisMessage && <div className="text-sm text-gray-700">{analysisMessage}</div>}
         </div>
       </div>
@@ -361,9 +365,13 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
         </div>
       )}
 
-      {analysis && (
-        <div className="mt-6 bg-white rounded-xl shadow-md p-6">
-          <FlyerPreview listing={{ ...data, analysis }} brokerName="" brokerPhone="" />
+      {showFlyerPreview && (
+        <div className="mt-6 bg-white rounded-xl shadow-md p-6 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-base font-semibold">Vista previa del flyer</h3>
+            <button className="text-sm text-gray-600" onClick={() => setShowFlyerPreview(false)}>Volver a editar</button>
+          </div>
+          <MelFlyerPreview listing={{ ...data, analysis }} brokerName="" brokerPhone="" />
         </div>
       )}
     </div>
