@@ -83,22 +83,40 @@ function inferFeature(text: string): string {
 function sanitizeNumber(value: string): string | null {
   const cleaned = value.replace(/[^0-9.,]/g, "").trim();
   if (!cleaned) return null;
-  const lastDot = cleaned.lastIndexOf(".");
-  const lastComma = cleaned.lastIndexOf(",");
-  if (lastDot > lastComma) {
-    return cleaned.replace(/,/g, "").replace(/\.(?=[^\.]*$)/g, "");
+  const dotCount = (cleaned.match(/\./g) ?? []).length;
+  const commaCount = (cleaned.match(/,/g) ?? []).length;
+
+  if (dotCount && commaCount) {
+    const lastDot = cleaned.lastIndexOf(".");
+    const lastComma = cleaned.lastIndexOf(",");
+    if (lastComma > lastDot) {
+      const withoutThousands = cleaned.replace(/\./g, "");
+      return withoutThousands.slice(0, lastComma) + withoutThousands.slice(lastComma + 1);
+    }
+    const withoutThousands = cleaned.replace(/,/g, "");
+    return withoutThousands.slice(0, lastDot) + withoutThousands.slice(lastDot + 1);
   }
-  if (lastComma > lastDot) {
-    return cleaned.replace(/\./g, "").replace(/,(?=[^,]*$)/g, "");
+
+  if (commaCount) {
+    const lastComma = cleaned.lastIndexOf(",");
+    if (cleaned.length - lastComma - 1 === 3) return cleaned.replace(/,/g, "");
+    return cleaned.slice(0, lastComma) + cleaned.slice(lastComma + 1);
   }
-  return cleaned.replace(/,/g, "");
+
+  if (dotCount) {
+    const lastDot = cleaned.lastIndexOf(".");
+    if (cleaned.length - lastDot - 1 === 3) return cleaned.replace(/\./g, "");
+    return cleaned.slice(0, lastDot) + cleaned.slice(lastDot + 1);
+  }
+
+  return cleaned;
 }
 
 function normalizeCurrency(value: string): string {
   const cleaned = value.toUpperCase();
-  if (/UF/i.test(cleaned) || /CLF/i.test(cleaned)) return "UF";
-  if (/USD|US\$|U\$S/i.test(cleaned)) return "USD";
-  if (/\$/i.test(cleaned)) return "CLP";
+  if (/UF\b/i.test(cleaned) || /CLF\b/i.test(cleaned)) return "UF";
+  if (/(USD|US\$|U\$S)\b/i.test(cleaned)) return "USD";
+  if (/\$/i.test(cleaned) || /CLP\b/i.test(cleaned)) return "CLP";
   return "";
 }
 
@@ -109,6 +127,44 @@ function normalizePrice(raw: string): { price: string | null; currency: string }
   const digits = sanitizeNumber(text) ?? "";
   const price = digits ? digits.replace(/\.$/, "") : null;
   return { price, currency };
+}
+
+function extractPricePattern(text: string): string {
+  const patterns = [/(UF\s?[0-9][0-9\.,]*)/i, /(US\$\s?[0-9][0-9\.,]*)/i, /(\$\s?[0-9][0-9\.,]*)/i];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return clean(match[1]);
+    if (match?.[0]) return clean(match[0]);
+  }
+  return "";
+}
+
+function extractPriceFromScript(html: string): string {
+  const scriptBlocks = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1]);
+  for (const script of scriptBlocks) {
+    if (/window\.__INITIAL_STATE__|window\.__PRELOADED__|window\.__APOLLO_STATE__|window\.__NEXT_DATA__|window\.__/i.test(script)) continue;
+    const raw = extractPricePattern(script);
+    if (raw && !/Gastos comunes/i.test(script)) return raw;
+  }
+  return "";
+}
+
+function extractPriceFromInitialState(html: string): string {
+  const scriptBlocks = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1]);
+  for (const script of scriptBlocks) {
+    if (!/window\.__INITIAL_STATE__|window\.__PRELOADED__|window\.__APOLLO_STATE__|window\.__NEXT_DATA__|window\.__/i.test(script)) continue;
+    const raw = extractPricePattern(script);
+    if (raw && !/Gastos comunes/i.test(script)) return raw;
+  }
+  return "";
+}
+
+function extractPriceFromMeta(html: string): string {
+  return firstMatch(html, [/(UF\s?[0-9][0-9\.,]*)/i, /(US\$\s?[0-9][0-9\.,]*)/i, /(\$\s?[0-9][0-9\.,]*)/i, /Precio[^\d]{0,10}([0-9\.,]+\s*(?:UF|US\$|\$|CLP)?)/i]);
+}
+
+function extractPriceFromVisibleText(text: string): string {
+  return firstMatch(text, [/(UF\s?[0-9][0-9\.,]*)/i, /(US\$\s?[0-9][0-9\.,]*)/i, /(\$\s?[0-9][0-9\.,]*)/i]);
 }
 
 function normalizeOperation(value: string): string {
@@ -216,17 +272,55 @@ export async function POST(request: NextRequest) {
     const operation = normalizeOperation(rawOperation);
     addSource(sources, 'operation', 'text-analysis', rawOperation, operation);
 
-    const rawPriceCandidates = [
-      getJsonLdFirst(['price','offers.price','offers.priceSpecification.price','offers.priceCurrency']) || '',
-      firstMatch(priceSearchText, [/(UF\s?[\d\.,]+)/i, /(US\$\s?[\d\.,]+)/i, /(\$\s?[\d\.,]+)/i]),
-      firstMatch(priceSearchText, [/Precio[^\d]{0,10}([0-9\.,]+\s*(?:UF|US\$|\$|CLP)?)/i])
-    ].filter(Boolean);
-    const rawPrice = rawPriceCandidates[0] || '';
+    let rawPrice = "";
+    let rawCurrency = "";
+    let priceSource = "";
+
+    const jsonLdPrice = getJsonLdFirst(['offers.price','price','offers.priceSpecification.price','offers.priceSpecification.price']);
+    const jsonLdCurrency = getJsonLdFirst(['offers.priceCurrency','priceCurrency','offers.priceSpecification.priceCurrency','offers.priceSpecification.priceCurrency']);
+    if (jsonLdPrice || jsonLdCurrency) {
+      rawPrice = jsonLdPrice;
+      rawCurrency = jsonLdCurrency;
+      priceSource = 'json-ld';
+    }
+
+    if (!rawPrice) {
+      const embeddedPrice = extractPriceFromScript(html);
+      if (embeddedPrice) {
+        rawPrice = embeddedPrice;
+        priceSource = 'embedded-script';
+      }
+    }
+
+    if (!rawPrice) {
+      const initialStatePrice = extractPriceFromInitialState(html);
+      if (initialStatePrice) {
+        rawPrice = initialStatePrice;
+        priceSource = 'initial-state';
+      }
+    }
+
+    if (!rawPrice) {
+      const metaPrice = extractPriceFromMeta(html);
+      if (metaPrice) {
+        rawPrice = metaPrice;
+        priceSource = 'meta';
+      }
+    }
+
+    if (!rawPrice) {
+      const visiblePrice = extractPriceFromVisibleText(priceSearchText);
+      if (visiblePrice) {
+        rawPrice = visiblePrice;
+        priceSource = 'visible-text';
+      }
+    }
+
     const normalizedPrice = normalizePrice(rawPrice);
     const price = normalizedPrice.price;
-    const currency = normalizedPrice.currency || '';
-    addSource(sources, 'price', 'json-ld/text', rawPrice, price);
-    addSource(sources, 'currency', 'json-ld/text', rawPrice, currency);
+    const currency = normalizeCurrency(rawCurrency || rawPrice);
+    addSource(sources, 'price', priceSource || 'unknown', rawPrice, price);
+    addSource(sources, 'currency', priceSource || 'unknown', rawPrice || rawCurrency, currency);
 
     const technicalSection = html.match(/Ficha técnica[\s\S]{0,300}?<\/(?:(?:div|section|ul|li)|p)>/i)?.[0] || '';
     const bedroomsRaw = firstMatch(technicalSection, [/Dormitorios?\s*[:\-–]?\s*([0-9]+)/i, /([0-9]+)\s*Dormitorios?/i]) || getJsonLdFirst(['numberOfRooms','numberOfBedrooms','numBedrooms']) || firstMatch(combinedText, [/([0-9]+)\s*(?:dormitorios?|habitaciones?)/i, /(?:dormitorios?|habitaciones?)[^\d]{0,20}([0-9]+)/i]) || '';
