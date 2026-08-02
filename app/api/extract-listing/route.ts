@@ -199,19 +199,115 @@ function cleanDescription(value: string | null, title: string | null): string | 
   return description || null;
 }
 
+const communeNoiseRegex = /\b(?:comuna|comuna de|sector|barrio|condominio|edificio|torre|av\.?|ave\.?|avenida|calle|pasaje|camino|ruta|parcela|lote|unidad|ph|urbanizaci[oó]n|urbanizacion|condominio)\b/gi;
+const knownNeighborhoods = /\b(?:Lo Curro|La Dehesa|Jard[ií]n del Este|Chamisero|Chicureo|Santa Mar[ií]a de Manquehue|Los Trapenses|El Golf)\b/i;
+const regionBreadcrumbRegex = /\b(?:RM|Reg[ií]on Metropolitana|Region Metropolitana|Metropolitana|Regi[oó]n)\b/i;
+
+function stripCommuneNoise(value: string): string {
+  return clean(value)
+    .replace(communeNoiseRegex, '')
+    .replace(/[\/|•·]/g, ' ')
+    .replace(/\s+/g, ' ',)
+    .trim();
+}
+
 function normalizeCommune(value: string | null): string | null {
   if (!value) return null;
-  let cleaned = clean(value);
-  const segments = cleaned.split(/\s*,\s*/).filter(Boolean);
-  if (segments.length > 1) {
-    const lastSegment = segments[segments.length - 1];
-    if (!/^(?:sector|barrio|condominio|edificio|torre|av\.?|avenida|calle|pasaje|camino|ruta)\b/i.test(lastSegment)) {
-      cleaned = lastSegment;
+  const raw = clean(value);
+  const parts = raw.split(/[,\/|•·]+/).map(part => part.trim()).filter(Boolean);
+  const candidates = parts.flatMap(part => part.split(/\s*[-–]\s*/).map(p => p.trim()).filter(Boolean));
+  const normalized = candidates
+    .map(stripCommuneNoise)
+    .map(clean)
+    .filter(Boolean)
+    .map(v => v.toUpperCase())
+    .filter(v => !/^(?:RM|REGI[OÓ]N|METROPOLITANA|CHILE|SANTIAGO)$/i.test(v))
+    .filter(v => !knownNeighborhoods.test(v))
+    .filter(v => !/^(?:CASAS?|DEPARTAMENTOS?|ARRIENDO|ALQUILER|VENTA|PROPIEDADES?|USADAS|NUEVAS|CONDOMINIO|BARRIO|SECTOR|DIRECCION|UBICACION)$/i.test(v));
+  return normalized.length ? normalized[normalized.length - 1] : null;
+}
+
+function extractCommuneFromJsonLd(html: string, jsonLd: unknown[]): string {
+  const addressCandidates = [
+    ...deepFind(jsonLd, ['addressLocality']),
+    ...deepFind(jsonLd, ['locality'])
+  ].filter((value): value is string => typeof value === 'string');
+  for (const candidate of addressCandidates) {
+    const commune = normalizeCommune(candidate);
+    if (commune) return commune;
+  }
+
+  const breadcrumbNames: string[] = [];
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) return node.forEach(visit);
+    const obj = node as Record<string, unknown>;
+    if (obj['@type'] === 'BreadcrumbList' && Array.isArray(obj['itemListElement'])) {
+      for (const item of obj['itemListElement']) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+        const itemObj = item as Record<string, unknown>;
+        const reference = itemObj['item'] ?? itemObj;
+        if (!reference || typeof reference !== 'object' || Array.isArray(reference)) continue;
+        const referenceObj = reference as Record<string, unknown>;
+        if (typeof referenceObj['name'] === 'string') {
+          breadcrumbNames.push(clean(referenceObj['name']));
+        }
+      }
+    }
+    Object.values(obj).forEach(visit);
+  };
+  visit(jsonLd);
+
+  const regionIndex = breadcrumbNames.findIndex(name => regionBreadcrumbRegex.test(name));
+  if (regionIndex !== -1) {
+    for (let i = regionIndex + 1; i < breadcrumbNames.length; i++) {
+      const commune = normalizeCommune(breadcrumbNames[i]);
+      if (commune) return commune;
     }
   }
-  cleaned = cleaned.replace(/\b(?:sector|barrio|condominio|edificio|torre|av\.?|avenida|calle|pasaje|camino|ruta)\b/gi, "");
-  cleaned = cleaned.replace(/\d+/g, "").trim();
-  return cleaned ? cleaned.replace(/\s+/g, " ").toUpperCase() : null;
+
+  for (let i = breadcrumbNames.length - 1; i >= 0; i--) {
+    const commune = normalizeCommune(breadcrumbNames[i]);
+    if (commune) return commune;
+  }
+
+  return '';
+}
+
+function extractCommuneFromScripts(html: string, includeInitialState: boolean): string {
+  const scriptBlocks = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1]);
+  for (const script of scriptBlocks) {
+    const isInitial = /window\.__INITIAL_STATE__|window\.__PRELOADED__|window\.__APOLLO_STATE__|window\.__NEXT_DATA__|window\.__/i.test(script);
+    if (includeInitialState !== isInitial) continue;
+    const rawCommune = firstMatch(script, [
+      /["']addressLocality["']\s*[:=]\s*["']([^"']+)["']/i,
+      /["']locality["']\s*[:=]\s*["']([^"']+)["']/i,
+      /["']comuna["']\s*[:=]\s*["']([^"']+)["']/i,
+      /["']commune["']\s*[:=]\s*["']([^"']+)["']/i,
+      /["']city["']\s*[:=]\s*["']([^"']+)["']/i,
+      /addressLocality\s*[:=]\s*["']([^"']+)["']/i,
+      /locality\s*[:=]\s*["']([^"']+)["']/i
+    ]);
+    if (rawCommune && normalizeCommune(rawCommune)) return rawCommune;
+  }
+  return '';
+}
+
+function extractCommuneFromMeta(html: string): string {
+  const rawCommune = firstMatch(html, [
+    /Comuna\s*[:\-–]?\s*([A-ZÁÉÍÓÚÑ][^"'<>\n]{1,40})/i,
+    /Ubicaci[oó]n\s*[:\-–]?\s*([A-ZÁÉÍÓÚÑ][^"'<>\n]{1,40})/i,
+    /ubicaci[oó]n\s*[:\-–]?\s*([A-ZÁÉÍÓÚÑ][^"'<>\n]{1,40})/i
+  ]);
+  return rawCommune && normalizeCommune(rawCommune) ? rawCommune : '';
+}
+
+function extractCommuneFromVisibleText(text: string): string {
+  const rawCommune = firstMatch(text, [
+    /Comuna\s*[:\-–]?\s*([A-ZÁÉÍÓÚÑ][^\n]{1,40})/i,
+    /Ubicaci[oó]n\s*[:\-–]?\s*([A-ZÁÉÍÓÚÑ][^\n]{1,40})/i
+  ]);
+  return rawCommune && normalizeCommune(rawCommune) ? rawCommune : '';
 }
 
 function normalizeArea(value: string | null): string | null {
@@ -352,9 +448,31 @@ export async function POST(request: NextRequest) {
     const orientacion = orientacionRaw ? clean(orientacionRaw) : null;
     addSource(sources, 'orientacion', 'html/text', orientacionRaw, orientacion);
 
-    const rawCommune = firstMatch(listingContext, [/Comuna\s*[:\-–]?\s*([^<\n]+)/i, /address_line\s*:\s*\"([^\"]+)\"/i, /itemprop=["']addressLocality["'][^>]*>([^<]+)/i, /addressLocality["']?[:=]["']?([^"'\s,<>]+)/i]) || '';
+let rawCommune = extractCommuneFromJsonLd(html, jsonLd);
+    let communeSource = 'json-ld';
+
+    if (!rawCommune) {
+      rawCommune = extractCommuneFromScripts(html, false);
+      communeSource = rawCommune ? 'embedded-script' : communeSource;
+    }
+
+    if (!rawCommune) {
+      rawCommune = extractCommuneFromScripts(html, true);
+      communeSource = rawCommune ? 'initial-state' : communeSource;
+    }
+
+    if (!rawCommune) {
+      rawCommune = extractCommuneFromMeta(html);
+      communeSource = rawCommune ? 'meta' : communeSource;
+    }
+
+    if (!rawCommune) {
+      rawCommune = extractCommuneFromVisibleText(plain);
+      communeSource = rawCommune ? 'visible-text' : communeSource;
+    }
+
     const commune = normalizeCommune(rawCommune);
-    addSource(sources, 'commune', 'html/text', rawCommune, commune);
+    addSource(sources, 'commune', communeSource || 'unknown', rawCommune, commune);
 
     const images = pickImages(html, jsonLd);
     const feature = inferFeature(`${title || ''} ${description || ''} ${plain}`);
