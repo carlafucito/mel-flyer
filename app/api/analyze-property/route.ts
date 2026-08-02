@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import OpenAI from "openai";
 import type { PhotoWatermarkAnalysis, PropertyAnalysis } from "@/types/listing";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+
+const GEMINI_MODEL = "gemini-1.5-flash";
 
 const ROOM_TYPES = [
   "Fachada",
@@ -150,8 +151,8 @@ function normalizeAnalysis(payload: any, imageCount: number): PropertyAnalysis {
 
 export async function POST(request: NextRequest) {
   try {
-    if (!process.env.OPENAI_API_KEY) {
-      return NextResponse.json({ error: "Falta OPENAI_API_KEY en Vercel" }, { status: 500 });
+    if (!process.env.GEMINI_API_KEY) {
+      return NextResponse.json({ error: "Falta GEMINI_API_KEY en Vercel" }, { status: 500 });
     }
 
     const body = await request.json();
@@ -163,14 +164,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No hay fotos" }, { status: 400 });
     }
 
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const note = newImages && Array.isArray(newImages) && newImages.length > 0
       ? "Estas son las fotografías nuevas agregadas o reemplazadas. Revisa si alguna de ellas merece ser portada o secundaria. No vuelvas a analizar todo el texto si no es necesario."
       : "Analiza todas las fotografías para elegir la mejor portada, tres fotos secundarias y la característica comercial más potente.";
 
-    const content: any[] = [{
-      type: "input_text",
-      text: `Analiza esta propiedad inmobiliaria y responde SOLO con JSON válido, sin texto adicional.
+    const prompt = `Analiza esta propiedad inmobiliaria y responde SOLO con JSON válido, sin texto adicional.
 Estructura exacta del JSON:
 {
   "mainPhotoIndex": 0,
@@ -206,32 +204,43 @@ Reglas:
 - El quinto círculo debe ser una característica verificable en el texto o en las imágenes, sin inventar atributos.
 - El resumen comercial debe ser profesional, directo y útil, máximo dos líneas.
 - Para cada foto asigna un commercialScore entero entre 0 y 100, un recommendedRole, un roomType, strengths, weaknesses y una reason breve, en una sola frase.
-- Para cada foto detecta marcas de agua y marca si son reutilizables. No las elimines.`
-    }];
+- Para cada foto detecta marcas de agua y marca si son reutilizables. No las elimines.`;
 
     const selectedImages = (newImages && Array.isArray(newImages) && newImages.length > 0) ? newImages : images;
+    const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [{ text: prompt }];
     for (const image of selectedImages) {
-      content.push({ type: "input_image", image_url: image });
+      const match = image.match(/^data:(.+);base64,(.*)$/);
+      if (match) {
+        parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
+      }
     }
 
-    const response = await client.responses.create({
-      model: "gpt-5-mini",
-      input: [{ role: "user", content }]
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts }],
+        generationConfig: { responseMimeType: "application/json" }
+      })
     });
 
-    const raw = (response.output_text?.trim() ??
-      response.output
-        ?.flatMap((item: any) => item.content ?? [])
-        .map((part: any) => part.text ?? "")
-        .join("")
-        .trim() ??
-      "");
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Gemini devolvió error ${response.status}: ${errorText}`);
+    }
+
+    const payload = await response.json();
+    const raw = payload?.candidates?.[0]?.content?.parts
+      ?.filter((part: any) => typeof part?.text === "string")
+      .map((part: any) => part.text)
+      .join("")
+      .trim() ?? "";
     const jsonText = raw.replace(/^```json\s*|```$/g, "");
     try {
       const parsed = JSON.parse(jsonText);
       return NextResponse.json(normalizeAnalysis(parsed, selectedImages.length));
     } catch (error) {
-      return NextResponse.json({ error: "OpenAI devolvió respuesta no válida", raw }, { status: 500 });
+      return NextResponse.json({ error: "Gemini devolvió respuesta no válida", raw }, { status: 500 });
     }
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Error de análisis" }, { status: 500 });
