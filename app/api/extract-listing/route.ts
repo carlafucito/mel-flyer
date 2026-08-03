@@ -6,6 +6,140 @@ export const maxDuration = 60;
 
 const clean = (value: unknown) => String(value ?? "").replace(/\s+/g, " ").trim();
 const normalizeText = (value: unknown) => clean(value).replace(/\s*[-|–|\\|]\s*Portal Inmobiliario.*$/i, '').trim();
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function preserveParagraphs(value: string): string {
+  const normalized = value
+    .replace(/\r\n?/g, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n');
+
+  return normalized
+    .split('\n')
+    .map(line => line.replace(/\s+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function cleanDescription(value: string | null, title: string | null): string | null {
+  if (!value) return null;
+  let description = preserveParagraphs(value);
+  if (title) {
+    const escapedTitle = escapeRegExp(title);
+    description = description.replace(new RegExp(`^${escapedTitle}[\s:\-–]*`, 'i'), '').trim();
+  }
+  description = description.replace(/^[\s\n]*Descripción[:\s]*/i, '').trim();
+  description = description.replace(/\n{3,}/g, '\n\n').trim();
+  return description || null;
+}
+
+function normalizeCommercialTitle(value: unknown): string | null {
+  const raw = normalizeText(value);
+  if (!raw) return null;
+  let normalized = raw
+    .replace(/[\s]+/g, ' ')
+    .replace(/[-–|\/]+/g, ' ')
+    .replace(/\b(\d+)\s*[dD]\b/g, '$1 dormitorios')
+    .replace(/\b(\d+)\s*[bB]\b/g, '$1 baños')
+    .replace(/\b(\d+)\s*[eE]\b/g, '$1 estacionamientos')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  normalized = normalized
+    .replace(/\bCon\b/gi, 'con')
+    .replace(/\bY\b/gi, 'y')
+    .replace(/\bAl\b/gi, 'al')
+    .replace(/\bDel\b/gi, 'del')
+    .replace(/\bDe\b/gi, 'de')
+    .replace(/\bEn\b/gi, 'en');
+
+  const titled = normalized
+    .toLowerCase()
+    .replace(/\b([a-záéíóúñü])/g, (_, c) => c.toUpperCase());
+
+  return titled;
+}
+
+function extractJsonLdDescription(jsonLd: unknown[]): string | null {
+  const candidates: string[] = [];
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) return node.forEach(visit);
+    const obj = node as Record<string, unknown>;
+    for (const [key, value] of Object.entries(obj)) {
+      if (key.toLowerCase().includes('description') && typeof value === 'string') {
+        candidates.push(value);
+      }
+      visit(value);
+    }
+  };
+  visit(jsonLd);
+  return candidates.find(desc => desc.trim().length > 20) || null;
+}
+
+function extractVisibleDescription(html: string): string | null {
+  const section = html.match(/<h2[^>]*>\s*Descripción\s*<\/h2>([\s\S]*?)(?=<h2[^>]*>|<section|<div[^>]+class=["'][^"']*ui-pdp-container__row[^"']*["']|$)/i);
+  if (!section) return null;
+  const raw = section[1]
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<\/p>\s*<p>/gi, '\n\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ');
+  return preserveParagraphs(raw);
+}
+
+function normalizePhotoUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const paramsToRemove = ['w', 'width', 'h', 'height', 'q', 'quality', 'cache', 's', 'auto', 'fit', 'dpr'];
+    for (const param of paramsToRemove) parsed.searchParams.delete(param);
+    const entries = [...parsed.searchParams.entries()].sort(([a], [b]) => a.localeCompare(b));
+    parsed.search = entries.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
+    return parsed.toString();
+  } catch {
+    return url.replace(/\s+/g, ' ').trim();
+  }
+}
+
+function photoResolutionScore(url: string): number {
+  try {
+    const parsed = new URL(url);
+    const width = Number(parsed.searchParams.get('w') || parsed.searchParams.get('width') || '0');
+    const height = Number(parsed.searchParams.get('h') || parsed.searchParams.get('height') || '0');
+    if (width || height) return width * height || width + height;
+    return 0;
+  } catch {
+    return 0;
+  }
+}
+
+function normalizePhotoKey(url: string): string {
+  const normalized = normalizePhotoUrl(url);
+  return normalized.replace(/[?&]$/g, '');
+}
+
+function dedupeImages(images: string[]) {
+  const map = new Map<string, { url: string; score: number }>();
+  for (const image of images) {
+    const key = normalizePhotoKey(image);
+    const score = photoResolutionScore(image);
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, { url: image, score });
+    } else if (score > existing.score) {
+      map.set(key, { url: image, score });
+    }
+  }
+  return {
+    images: Array.from(map.values()).map(item => item.url),
+    originalPhotoCount: images.length,
+    uniquePhotoCount: map.size
+  };
+}
 
 function firstMatch(text: string, patterns: RegExp[]): string {
   for (const pattern of patterns) {
@@ -187,17 +321,6 @@ function normalizePropertyType(value: string): string | null {
   return null;
 }
 
-function cleanDescription(value: string | null, title: string | null): string | null {
-  if (!value) return null;
-  let description = clean(value);
-  if (title) {
-    const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    description = description.replace(new RegExp(`^${escapedTitle}[\\s:\\-–]*`, "i"), "").trim();
-    description = description.replace(new RegExp(escapedTitle, "gi"), "").trim();
-  }
-  description = description.replace(/^\s*Descripción:\s*/i, "").trim();
-  return description || null;
-}
 
 const communeNoiseRegex = /\b(?:comuna|comuna de|sector|barrio|condominio|edificio|torre|av\.?|ave\.?|avenida|calle|pasaje|camino|ruta|parcela|lote|unidad|ph|urbanizaci[oó]n|urbanizacion|condominio)\b/gi;
 const knownNeighborhoods = /\b(?:Lo Curro|La Dehesa|Jard[ií]n del Este|Chamisero|Chicureo|Santa Mar[ií]a de Manquehue|Los Trapenses|El Golf)\b/i;
@@ -357,12 +480,21 @@ export async function POST(request: NextRequest) {
     const sources: ExtractionSource[] = [];
 
     const rawTitle = getJsonLdFirst(['name']) || getMetaFirst([/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i]) || firstMatch(html, [/<title>([^<]+)/i]);
-    const title = rawTitle ? normalizeText(rawTitle) : null;
+    const title = rawTitle ? normalizeCommercialTitle(rawTitle) : null;
     addSource(sources, 'title', 'json-ld/meta/title', rawTitle, title);
 
-    let description = getJsonLdFirst(['description']) || getMetaFirst([/<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)["']/i]) || null;
-    description = cleanDescription(description, title);
-    addSource(sources, 'description', 'json-ld/meta/description', description, description);
+    const jsonLdDescription = extractJsonLdDescription(jsonLd);
+    const visibleDescription = extractVisibleDescription(html);
+    let rawDescription = jsonLdDescription;
+    if (!rawDescription || rawDescription.trim().length < 20 || cleanDescription(rawDescription, title) === null) {
+      rawDescription = visibleDescription || null;
+    }
+    if (!rawDescription) {
+      rawDescription = getMetaFirst([/<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)["']>/i]) || null;
+    }
+    const description = cleanDescription(rawDescription, title);
+    const descriptionSource = jsonLdDescription ? 'json-ld' : visibleDescription ? 'visible-block' : 'meta';
+    addSource(sources, 'description', descriptionSource, rawDescription, description);
 
     const rawOperation = firstMatch(`${title || ''} ${description || ''} ${combinedText}`.toLowerCase(), [/arriendo|alquiler/i, /venta/i]) || 'VENTA';
     const operation = normalizeOperation(rawOperation);
@@ -474,7 +606,8 @@ let rawCommune = extractCommuneFromJsonLd(html, jsonLd);
     const commune = normalizeCommune(rawCommune);
     addSource(sources, 'commune', communeSource || 'unknown', rawCommune, commune);
 
-    const images = pickImages(html, jsonLd);
+    const extractedImages = pickImages(html, jsonLd);
+    const { images, originalPhotoCount, uniquePhotoCount } = dedupeImages(extractedImages);
     const feature = inferFeature(`${title || ''} ${description || ''} ${plain}`);
 
     const rawType = getJsonLdFirst(['@type','type','category','propertyType','additionalType']) || '';
@@ -502,6 +635,8 @@ let rawCommune = extractCommuneFromJsonLd(html, jsonLd);
       description,
       raw_text: plain || null,
       images,
+      originalPhotoCount,
+      uniquePhotoCount,
       feature,
       propertyType: propertyType || null,
       parking: parking || null,
