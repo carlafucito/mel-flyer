@@ -47,12 +47,16 @@ export type ListingResult = {
   description: string | null;
   raw_text?: string | null;
   images: string[];
+  url?: string;
+  technical_details?: Record<string, string>;
   feature: string;
   propertyType: string | null;
   parking?: string | null;
   bodegas?: string | null;
   gastos_comunes?: string | null;
   orientacion?: string | null;
+  originalPhotoCount?: number;
+  uniquePhotoCount?: number;
   analysis?: PropertyAnalysis | null;
   missing?: string[];
   extractionWarnings?: string[];
