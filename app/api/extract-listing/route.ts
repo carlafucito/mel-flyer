@@ -54,15 +54,48 @@ function extractJsonLdDescription(jsonLd: unknown[]): string | null {
 }
 
 function extractVisibleDescription(html: string): string | null {
-  const section = html.match(/<h2[^>]*>\s*Descripción\s*<\/h2>([\s\S]*?)(?=<h2[^>]*>|<section|<div[^>]+class=["'][^"']*ui-pdp-container__row[^"']*["']|$)/i);
-  if (!section) return null;
-  const raw = section[1]
+  const sectionMatch = html.match(/<div[^>]+id=["']description["'][^>]*>([\s\S]*?)<\/div>/i)
+    || html.match(/<div[^>]+class=["'][^"']*ui-pdp-description[^"']*["'][^>]*>([\s\S]*?)<\/div>/i)
+    || html.match(/<h2[^>]*>\s*Descripción\s*<\/h2>([\s\S]*?)(?=<h2[^>]*>|<div[^>]+id=["']location_and_points["']|<div[^>]+class=["'][^"']*ui-pdp-container__row[^"']*["']|$)/i);
+  if (!sectionMatch) return null;
+  let raw = sectionMatch[1];
+  const contentMatch = raw.match(/<p[^>]*class=["'][^"']*ui-pdp-description__content[^"']*["'][^>]*>([\s\S]*?)<\/p>/i);
+  if (contentMatch) raw = contentMatch[1];
+  raw = raw
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<\/p>\s*<p>/gi, '\n\n')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, ' ');
   return preserveParagraphs(raw);
+}
+
+function normalizeOrientacion(value: string): string | null {
+  const raw = clean(value).toUpperCase().replace(/\s+/g, '');
+  if (!raw) return null;
+  const mapping: Record<string, string> = {
+    N: 'Norte', S: 'Sur', E: 'Oriente', O: 'Poniente', P: 'Poniente',
+    NE: 'Noreste', NO: 'Noroeste', SE: 'Sureste', SO: 'Suroeste',
+    NORTE: 'Norte', SUR: 'Sur', ORIENTE: 'Oriente', ESTE: 'Oriente',
+    OESTE: 'Poniente', OCCIDENTE: 'Poniente', PONIENTE: 'Poniente',
+    NORESTE: 'Noreste', NOROESTE: 'Noroeste', SURESTE: 'Sureste', SUROESTE: 'Suroeste'
+  };
+  if (mapping[raw]) return mapping[raw];
+  if (/(^|[^A-Z])(NORTE|NOROESTE|NORESTE)([^A-Z]|$)/.test(raw)) return 'Norte';
+  if (/(^|[^A-Z])(SUR|SURESTE|SUROESTE)([^A-Z]|$)/.test(raw)) return 'Sur';
+  if (/(^|[^A-Z])(ORIENTE|ESTE)([^A-Z]|$)/.test(raw)) return 'Oriente';
+  if (/(^|[^A-Z])(PONIENTE|OESTE|OCCIDENTE)([^A-Z]|$)/.test(raw)) return 'Poniente';
+  return null;
+}
+
+function extractOrientacionFromDetails(details: Record<string, string>): string | null {
+  const keys = ['Orientación', 'Orientacion', 'Orientaci\u00F3n'];
+  for (const key of keys) {
+    if (!details[key]) continue;
+    const normalized = normalizeOrientacion(details[key]);
+    if (normalized) return normalized;
+  }
+  return null;
 }
 
 function extractTechnicalSpecs(html: string): Record<string, string> {
@@ -512,11 +545,11 @@ export async function POST(request: NextRequest) {
     const gastos_comunes = gastosComunesRaw ? clean(gastosComunesRaw) : null;
     addSource(sources, 'gastos_comunes', 'html/text', gastosComunesRaw, gastos_comunes);
 
-    const orientacionRaw = firstMatch(listingContext, [/Orientaci[oó]n\s*[:\-–]?\s*([NSEWO]{1,5})/i, /Orientaci[oó]n\s*[:\-–]?\s*([A-Za-z ]+)/i]) || '';
-    const orientacion = orientacionRaw ? clean(orientacionRaw) : null;
-    addSource(sources, 'orientacion', 'html/text', orientacionRaw, orientacion);
+    const technical_details = extractTechnicalSpecs(html);
+    const orientacion = extractOrientacionFromDetails(technical_details) || null;
+    addSource(sources, 'orientacion', 'technical-details', technical_details['Orientación'] || technical_details['Orientacion'] || technical_details['Orientaci\u00F3n'] || '', orientacion);
 
-let rawCommune = extractCommuneFromJsonLd(html, jsonLd);
+    let rawCommune = extractCommuneFromJsonLd(html, jsonLd);
     let communeSource = 'json-ld';
 
     if (!rawCommune) {
@@ -543,8 +576,7 @@ let rawCommune = extractCommuneFromJsonLd(html, jsonLd);
     addSource(sources, 'commune', communeSource || 'unknown', rawCommune, commune);
 
     const images = pickImages(html, jsonLd);
-    const technical_details = extractTechnicalSpecs(html);
-    const feature = "";
+    const feature = inferFeature(`${title || ''} ${description || ''} ${plain} ${Object.values(technical_details).join(' ')}`);
 
     const rawType = getJsonLdFirst(['@type','type','category','propertyType','additionalType']) || '';
     let propertyType = normalizePropertyType(rawType) || normalizePropertyType(`${title || ''} ${description || ''} ${listingContext}`) || null;

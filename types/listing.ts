@@ -18,6 +18,7 @@ export type PhotoWatermarkAnalysis = {
 
 export type PropertyAnalysis = {
   propertyType?: string;
+  orientation?: string;
   marketingSummary: string;
   featuredFeature: string;
   featuredFeatureCategory: string;

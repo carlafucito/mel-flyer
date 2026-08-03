@@ -140,6 +140,9 @@ function normalizeAnalysis(payload: any, imageCount: number): PropertyAnalysis {
     featuredFeatureCategory: typeof payload?.featuredFeatureCategory === "string" && payload.featuredFeatureCategory.trim()
       ? payload.featuredFeatureCategory.trim()
       : "Otro",
+    orientation: typeof payload?.orientation === "string" && payload.orientation.trim()
+      ? payload.orientation.trim()
+      : undefined,
     mainPhotoIndex: mainIndex >= 0 && mainIndex < imageCount ? mainIndex : 0,
     secondaryPhotoIndexes: secondaryIndexes.filter((index) => index >= 0 && index < imageCount),
     analysisWarnings: Array.isArray(payload?.analysisWarnings)
@@ -156,7 +159,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { title, description, text, images, newImages } = body;
+    const { title, description, text, orientation, images, newImages } = body;
     if (!description && !title) {
       return NextResponse.json({ error: "Falta texto o descripción" }, { status: 400 });
     }
@@ -171,6 +174,9 @@ export async function POST(request: NextRequest) {
     const prompt = `Analiza esta propiedad inmobiliaria y responde SOLO con JSON válido, sin texto adicional.
 Estructura exacta del JSON:
 {
+  "title": "",
+  "description": "",
+  "orientation": "",
   "mainPhotoIndex": 0,
   "secondaryPhotoIndexes": [1, 2, 3],
   "featuredFeature": "",
@@ -193,6 +199,7 @@ Estructura exacta del JSON:
 
 Título: ${title || ""}
 Descripción: ${description || ""}
+Orientación: ${orientation || ""}
 Texto completo: ${text || ""}
 ${note}
 Reglas:

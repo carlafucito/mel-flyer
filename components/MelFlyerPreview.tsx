@@ -15,22 +15,22 @@ export default function MelFlyerPreview({ listing, brokerName, brokerPhone }: Me
     .filter(Boolean)
     .slice(0, 3);
 
-  const hasRequiredData = Boolean(
-    mainPhoto &&
-    secondaryPhotos.length === 3 &&
-    listing.operation &&
-    listing.commune &&
-    listing.area_total &&
-    listing.price &&
-    listing.bedrooms &&
-    listing.bathrooms &&
-    (listing.feature || listing.analysis?.featuredFeature)
-  );
+  const missingFields = [
+    !mainPhoto && "portada",
+    secondaryPhotos.length !== 3 && "tres fotos secundarias",
+    !listing.operation && "operación",
+    !listing.commune && "comuna",
+    !listing.area_total && "superficie",
+    !listing.price && "precio",
+    !listing.bedrooms && "dormitorios",
+    !listing.bathrooms && "baños",
+    !(listing.feature || listing.analysis?.featuredFeature) && "característica destacada"
+  ].filter(Boolean) as string[];
 
-  if (!hasRequiredData) {
+  if (missingFields.length > 0) {
     return (
       <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-4 text-sm text-gray-600">
-        Faltan datos esenciales para generar el flyer. Completa la portada, tres secundarias, operación, comuna, superficie, precio, dormitorios, baños y la característica destacada.
+        Faltan datos esenciales para generar el flyer: {missingFields.join(", ")}. Completa estos campos y vuelve a intentarlo.
       </div>
     );
   }

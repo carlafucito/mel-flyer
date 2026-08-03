@@ -78,6 +78,7 @@ export default function ListingEditor({ initial, onBack }: { initial: ListingRes
         body: JSON.stringify({
           title: data.title,
           description: data.description,
+          orientation: data.orientacion,
           text: data.raw_text,
           images: data.images,
           newImages: []
