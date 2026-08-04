@@ -159,7 +159,8 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { title, description, text, orientation, images, newImages } = body;
+    const { title, description, text, orientation, images, newImages, debug } = body;
+    const debugMode = Boolean(debug);
     if (!description && !title) {
       return NextResponse.json({ error: "Falta texto o descripción" }, { status: 400 });
     }
@@ -170,6 +171,8 @@ export async function POST(request: NextRequest) {
     const note = newImages && Array.isArray(newImages) && newImages.length > 0
       ? "Estas son las fotografías nuevas agregadas o reemplazadas. Revisa si alguna de ellas merece ser portada o secundaria. No vuelvas a analizar todo el texto si no es necesario."
       : "Analiza todas las fotografías para elegir la mejor portada, tres fotos secundarias y la característica comercial más potente.";
+
+    const startTime = Date.now();
 
     const prompt = `Analiza esta propiedad inmobiliaria y responde SOLO con JSON válido, sin texto adicional.
 Estructura exacta del JSON:
@@ -214,6 +217,19 @@ Reglas:
 - Para cada foto detecta marcas de agua y marca si son reutilizables. No las elimines.`;
 
     const selectedImages = (newImages && Array.isArray(newImages) && newImages.length > 0) ? newImages : images;
+    const debugData: Record<string, unknown> = {
+      prompt,
+      selectedImagesCount: selectedImages.length,
+      requestOrientation: orientation ?? null,
+      requestTitle: title ?? null,
+      requestDescription: description ?? null,
+      responseJson: null,
+      rawText: null,
+      jsonText: null,
+      tokens: null,
+      durationMs: null,
+      error: null
+    };
     const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [{ text: prompt }];
     for (const image of selectedImages) {
       const match = image.match(/^data:(.+);base64,(.*)$/);
@@ -233,21 +249,35 @@ Reglas:
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Gemini devolvió error ${response.status}: ${errorText}`);
+      const elapsed = Date.now() - startTime;
+      debugData.durationMs = elapsed;
+      debugData.error = `Gemini devolvió error ${response.status}: ${errorText}`;
+      return NextResponse.json({ error: debugData.error, debug: debugData }, { status: response.status });
     }
 
     const payload = await response.json();
+    const elapsed = Date.now() - startTime;
+    debugData.durationMs = elapsed;
+    debugData.responseJson = payload;
+    debugData.tokens = payload?.metadata?.tokens ?? payload?.metadata?.usage?.total_tokens ?? payload?.candidates?.[0]?.metadata?.tokens ?? null;
+
     const raw = payload?.candidates?.[0]?.content?.parts
       ?.filter((part: any) => typeof part?.text === "string")
       .map((part: any) => part.text)
       .join("")
       .trim() ?? "";
+    debugData.rawText = raw;
     const jsonText = raw.replace(/^```json\s*|```$/g, "");
+    debugData.jsonText = jsonText;
     try {
       const parsed = JSON.parse(jsonText);
-      return NextResponse.json(normalizeAnalysis(parsed, selectedImages.length));
+      const normalized = normalizeAnalysis(parsed, selectedImages.length);
+      return debugMode
+        ? NextResponse.json({ ...normalized, debug: debugData })
+        : NextResponse.json(normalized);
     } catch (error) {
-      return NextResponse.json({ error: "Gemini devolvió respuesta no válida", raw }, { status: 500 });
+      debugData.error = error instanceof Error ? error.message : String(error);
+      return NextResponse.json({ error: "Gemini devolvió respuesta no válida", raw, debug: debugData }, { status: 500 });
     }
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Error de análisis" }, { status: 500 });

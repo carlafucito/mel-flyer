@@ -61,6 +61,9 @@ export default function TestPage() {
   const [status, setStatus] = useState<"idle" | "extracting" | "ready" | "failed">("idle");
   const [rawJson, setRawJson] = useState<Record<string, unknown> | null>(null);
   const [result, setResult] = useState<ListingResult | null>(null);
+  const [geminiDebug, setGeminiDebug] = useState<Record<string, unknown> | null>(null);
+  const [geminiError, setGeminiError] = useState<string | null>(null);
+  const [analyzingGemini, setAnalyzingGemini] = useState(false);
 
   const rows = useMemo(() => {
     if (!result) return [];
@@ -109,6 +112,50 @@ export default function TestPage() {
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Error al ejecutar el extractor.");
       setStatus("failed");
+    }
+  };
+
+  const analyzeGemini = async () => {
+    if (!result) return;
+    setGeminiError(null);
+    setGeminiDebug(null);
+    setAnalyzingGemini(true);
+
+    try {
+      const response = await fetch('/api/analyze-property', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          title: result.title,
+          description: result.description,
+          orientation: result.orientacion,
+          text: result.raw_text,
+          images: result.images,
+          newImages: [],
+          debug: true
+        })
+      });
+      const json = await response.json();
+      if (!response.ok || json.error) {
+        setGeminiError(json.error || 'Error al analizar con Gemini');
+        setGeminiDebug(json.debug ? json.debug : { response: json });
+        return;
+      }
+
+      setGeminiDebug(json.debug ?? {
+        prompt: null,
+        responseJson: null,
+        rawText: null,
+        jsonText: null,
+        tokens: null,
+        durationMs: null,
+        error: null
+      });
+      setGeminiError(null);
+    } catch (error) {
+      setGeminiError(error instanceof Error ? error.message : 'Error al analizar con Gemini');
+    } finally {
+      setAnalyzingGemini(false);
     }
   };
 
